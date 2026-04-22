@@ -18,7 +18,6 @@ OBJECT_COLORS = {
     "table": "#D9A441",
 }
 
-
 def apply_custom_style():
     st.markdown(
         """
