@@ -507,12 +507,16 @@ def compute_workflow_score(workflow_path_stats):
             ideal_min, ideal_max = ideal_ranges[pair]
             score = score_distance_with_ideal_range(distance_cm, ideal_min, ideal_max)
         else:
+            ideal_min = None
+            ideal_max = None
             score = 0.0
 
         scored_paths.append({
             "from": path["from"],
             "to": path["to"],
             "length_cm": distance_cm,
+            "ideal_min_cm": ideal_min,
+            "ideal_max_cm": ideal_max,
             "score": score
         })
 
@@ -570,7 +574,13 @@ def compute_space_score(clearance_stats, walkability_stats, usable_fragmentation
     ) / 4.0
 
     return {
-        "space_score": final_space_score
+        "space_score": final_space_score,
+        "components": {
+            "clearance_score": clearance_score,
+            "critical_area_score": critical_area_score,
+            "walkability_score": walkability_score,
+            "usable_area_score": usable_area_score
+        }
     }
 
 def analyze_layout(layout_data):
@@ -596,7 +606,12 @@ def analyze_layout(layout_data):
 
     return {
         "space_score": space_score_stats["space_score"],
-        "workflow_score": workflow_score_stats["workflow_score"]
+        "workflow_score": workflow_score_stats["workflow_score"],
+        "space_components": space_score_stats["components"],
+        "clearance_stats": clearance_stats,
+        "walkability_stats": walkability_stats,
+        "usable_fragmentation_stats": usable_fragmentation_stats,
+        "workflow_paths": workflow_score_stats["scored_paths"]
     }
 
 def compare_layouts(result_a, result_b):
@@ -622,6 +637,8 @@ def compare_layouts(result_a, result_b):
 
     if space_winner == workflow_winner and space_winner != "tie":
         recommendation = f"Layout {space_winner} is better overall"
+    elif space_winner == workflow_winner and space_winner == "tie":
+        recommendation = "Both layouts are similar in terms of space and workflow"
     else:
         recommendation = (
             f"Trade-off: {space_winner} better for space, {workflow_winner} better for workflow"
