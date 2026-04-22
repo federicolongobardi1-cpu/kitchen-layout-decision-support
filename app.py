@@ -288,8 +288,20 @@ def describe_workflow_path(path):
 
 
 def build_workflow_rows(result):
+    workflow_paths = result.get("workflow_paths", [])
+    if not workflow_paths:
+        return [
+            {
+                "Path": "-",
+                "Distance": "-",
+                "Ideal range": "-",
+                "Score": "-",
+                "Effect": "workflow details unavailable",
+            }
+        ]
+
     rows = []
-    for path in result["workflow_paths"]:
+    for path in workflow_paths:
         rows.append(
             {
                 "Path": f"{path['from']} -> {path['to']}",
@@ -307,6 +319,21 @@ def build_workflow_rows(result):
 
 
 def build_space_rows(result):
+    required_keys = [
+        "clearance_stats",
+        "walkability_stats",
+        "usable_fragmentation_stats",
+        "space_components",
+    ]
+    if any(key not in result for key in required_keys):
+        return [
+            {
+                "Component": "-",
+                "Score": "-",
+                "Detail": "space details unavailable",
+            }
+        ]
+
     clearance_stats = result["clearance_stats"]
     walkability_stats = result["walkability_stats"]
     fragmentation_stats = result["usable_fragmentation_stats"]
@@ -346,7 +373,8 @@ def build_space_rows(result):
 def build_suggestion_rows(result):
     suggestions = []
 
-    for path in result["workflow_paths"]:
+    workflow_paths = result.get("workflow_paths", [])
+    for path in workflow_paths:
         effect = describe_workflow_path(path)
         if path["score"] < 0.75:
             if effect == "too far":
@@ -366,6 +394,26 @@ def build_suggestion_rows(result):
                     "Suggestion": suggestion,
                 }
             )
+
+    required_keys = [
+        "space_components",
+        "clearance_stats",
+        "walkability_stats",
+        "usable_fragmentation_stats",
+    ]
+    if any(key not in result for key in required_keys):
+        suggestions.append(
+            {
+                "Area": "Details",
+                "Issue": "Score details are unavailable",
+                "Score": "-",
+                "Suggestion": (
+                    "Restart Streamlit or redeploy with the updated logic.py so "
+                    "the app can explain score components."
+                ),
+            }
+        )
+        return suggestions
 
     components = result["space_components"]
     clearance_stats = result["clearance_stats"]
@@ -576,6 +624,9 @@ else:
     result_base = analyze_layout(baseline_layout)
     result_candidate = analyze_layout(candidate_layout)
     comparison = compare_layouts(result_base, result_candidate)
+
+    if "workflow_paths" not in result_candidate:
+        st.sidebar.warning("Score details are not loaded. Restart the app after updating logic.py.")
 
     score_col_1, score_col_2 = st.columns(2)
 
