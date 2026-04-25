@@ -1,7 +1,9 @@
 import copy
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import streamlit as st
+import streamlit.components.v1 as components
 from matplotlib.patches import Rectangle
 
 from logic import analyze_layout, compare_layouts, layout_base, layout_is_valid
@@ -18,116 +20,188 @@ OBJECT_COLORS = {
     "table": "#D9A441",
 }
 
-def apply_custom_style():
+DRAGGABLE_LAYOUT = components.declare_component(
+    "draggable_layout",
+    path=str(Path(__file__).parent / "components" / "draggable_layout"),
+)
+def hex_to_rgb(color):
+    color = color.lstrip("#")
+    if len(color) == 3:
+        color = "".join(ch * 2 for ch in color)
+    return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def rgb_to_hex(rgb):
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def mix_colors(base_color, overlay_color, ratio):
+    base_rgb = hex_to_rgb(base_color)
+    overlay_rgb = hex_to_rgb(overlay_color)
+    mixed = tuple(
+        round(base * (1 - ratio) + overlay * ratio)
+        for base, overlay in zip(base_rgb, overlay_rgb)
+    )
+    return rgb_to_hex(mixed)
+
+
+def resolve_theme():
+    primary = st.get_option("theme.primaryColor") or "#5B8DEF"
+    background = st.get_option("theme.backgroundColor") or "#ffffff"
+    secondary_background = st.get_option("theme.secondaryBackgroundColor") or "#f0f2f6"
+    text = st.get_option("theme.textColor") or "#262730"
+    base = (st.get_option("theme.base") or "light").lower()
+    is_dark = base == "dark"
+
+    return {
+        "app_bg": background,
+        "text": text,
+        "sidebar_bg": secondary_background,
+        "panel_bg": background,
+        "panel_border": mix_colors(secondary_background, text, 0.16 if is_dark else 0.12),
+        "subtitle": mix_colors(text, background, 0.38 if is_dark else 0.45),
+        "muted": mix_colors(text, background, 0.28 if is_dark else 0.35),
+        "progress_bg": mix_colors(primary, background, 0.78 if is_dark else 0.84),
+        "progress_fill": primary,
+        "button_bg": primary,
+        "button_border": mix_colors(primary, text, 0.18),
+        "button_hover": mix_colors(primary, text, 0.12),
+        "button_hover_border": mix_colors(primary, text, 0.28),
+        "button_disabled_bg": mix_colors(secondary_background, text, 0.12 if is_dark else 0.06),
+        "button_disabled_text": mix_colors(text, background, 0.52),
+        "room_bg": mix_colors(background, secondary_background, 0.38 if is_dark else 0.5),
+        "grid": mix_colors(background, text, 0.14 if is_dark else 0.08),
+        "plot_text": text,
+        "door": text,
+        "fallback_object": mix_colors(secondary_background, text, 0.32 if is_dark else 0.24),
+    }
+
+
+def apply_custom_style(theme):
     st.markdown(
-        """
+        f"""
         <style>
-        .stApp {
-            background: #f6f4ef;
-            color: #27313f;
-        }
+        .stApp {{
+            background: {theme["app_bg"]};
+            color: {theme["text"]};
+        }}
 
-        [data-testid="stSidebar"] {
-            background: #ffffff;
-            border-right: 1px solid #e3ded5;
-        }
+        [data-testid="stSidebar"] {{
+            background: {theme["sidebar_bg"]};
+            border-right: 1px solid {theme["panel_border"]};
+        }}
 
-        .app-header {
+        .app-header {{
             padding: 1.1rem 1.25rem;
-            border: 1px solid #e3ded5;
-            background: #ffffff;
+            border: 1px solid {theme["panel_border"]};
+            background: {theme["panel_bg"]};
             border-radius: 8px;
             margin-bottom: 1rem;
-        }
+        }}
 
-        .app-title {
+        .app-title {{
             font-size: 2rem;
             font-weight: 700;
             line-height: 1.1;
             margin: 0 0 0.35rem 0;
-            color: #27313f;
-        }
+            color: {theme["text"]};
+        }}
 
-        .app-subtitle {
+        .app-subtitle {{
             font-size: 1rem;
             margin: 0;
-            color: #657080;
-        }
+            color: {theme["subtitle"]};
+        }}
 
-        .score-panel {
-            border: 1px solid #e3ded5;
-            background: #ffffff;
+        .score-panel {{
+            border: 1px solid {theme["panel_border"]};
+            background: {theme["panel_bg"]};
             border-radius: 8px;
             padding: 1rem;
             margin-bottom: 0.75rem;
-        }
+        }}
 
-        .score-panel-title {
+        .score-panel-title {{
             font-size: 1rem;
             font-weight: 700;
             margin-bottom: 0.75rem;
-            color: #27313f;
-        }
+            color: {theme["text"]};
+        }}
 
-        .score-label {
+        .score-progress {{
+            width: 100%;
+            height: 0.95rem;
+            background: {theme["progress_bg"]};
+            border-radius: 999px;
+            overflow: hidden;
+            margin-top: 0.85rem;
+        }}
+
+        .score-progress-fill {{
+            height: 100%;
+            background: {theme["progress_fill"]};
+            border-radius: 999px;
+        }}
+
+        .score-label {{
             display: flex;
             justify-content: space-between;
             gap: 1rem;
             font-size: 0.9rem;
-            color: #465366;
+            color: {theme["muted"]};
             margin: 0.3rem 0;
-        }
+        }}
 
-        div[data-testid="stExpander"] {
-            background: #ffffff;
-            border: 1px solid #e3ded5;
+        div[data-testid="stExpander"] {{
+            background: {theme["panel_bg"]};
+            border: 1px solid {theme["panel_border"]};
             border-radius: 8px;
-        }
+        }}
 
-        .layout-legend {
+        .layout-legend {{
             display: flex;
             flex-wrap: wrap;
             gap: 0.5rem 0.85rem;
             align-items: center;
-            color: #465366;
+            color: {theme["muted"]};
             font-size: 0.9rem;
             margin: 0.35rem 0 1rem 0;
-        }
+        }}
 
-        .legend-item {
+        .legend-item {{
             display: inline-flex;
             align-items: center;
             gap: 0.35rem;
-        }
+        }}
 
-        .legend-swatch {
+        .legend-swatch {{
             width: 0.85rem;
             height: 0.85rem;
             border-radius: 3px;
-            border: 1px solid #27313f;
+            border: 1px solid {theme["text"]};
             display: inline-block;
-        }
+        }}
 
-        [data-testid="stSidebar"] div.stButton > button {
-            background: #2f7a67;
+        [data-testid="stSidebar"] div.stButton > button {{
+            background: {theme["button_bg"]};
             color: #ffffff;
-            border: 1px solid #276756;
+            border: 1px solid {theme["button_border"]};
             border-radius: 8px;
             font-weight: 700;
             width: 100%;
-        }
+        }}
 
-        [data-testid="stSidebar"] div.stButton > button:hover {
-            background: #276756;
+        [data-testid="stSidebar"] div.stButton > button:hover {{
+            background: {theme["button_hover"]};
             color: #ffffff;
-            border-color: #1f5446;
-        }
+            border-color: {theme["button_hover_border"]};
+        }}
 
-        [data-testid="stSidebar"] div.stButton > button:disabled {
-            background: #d8d2c8;
-            color: #8a8175;
-            border-color: #d8d2c8;
-        }
+        [data-testid="stSidebar"] div.stButton > button:disabled {{
+            background: {theme["button_disabled_bg"]};
+            color: {theme["button_disabled_text"]};
+            border-color: {theme["button_disabled_bg"]};
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -141,13 +215,13 @@ def get_object_by_id(layout_data, object_id):
     return None
 
 
-def plot_layout(layout_data, title):
+def plot_layout(layout_data, title, theme):
     room_width = layout_data["room"]["width"]
     room_depth = layout_data["room"]["depth"]
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    fig.patch.set_facecolor("#ffffff")
-    ax.set_facecolor("#fbfaf7")
+    fig.patch.set_facecolor(theme["panel_bg"])
+    ax.set_facecolor(theme["room_bg"])
     ax.set_axisbelow(True)
 
     room_rect = Rectangle(
@@ -156,20 +230,20 @@ def plot_layout(layout_data, title):
         room_depth,
         fill=False,
         linewidth=2.2,
-        edgecolor="#27313f",
+        edgecolor=theme["text"],
         zorder=3,
     )
     ax.add_patch(room_rect)
 
     for obj in layout_data["objects"]:
-        color = OBJECT_COLORS.get(obj["type"], "#9AA3AF")
+        color = OBJECT_COLORS.get(obj["type"], theme["fallback_object"])
         rect = Rectangle(
             (obj["x"], obj["y"]),
             obj["width"],
             obj["depth"],
             fill=True,
             facecolor=color,
-            edgecolor="#27313f",
+            edgecolor=theme["text"],
             linewidth=1.4,
             alpha=0.78,
             zorder=3,
@@ -186,7 +260,7 @@ def plot_layout(layout_data, title):
             va="center",
             fontsize=8,
             fontweight="bold",
-            color="#1f2937",
+            color=theme["plot_text"],
             zorder=4,
         )
 
@@ -196,7 +270,7 @@ def plot_layout(layout_data, title):
             [door["x"], door["x"]],
             [door["y"], door["y"] + door["width"]],
             linewidth=5,
-            color="#111827",
+            color=theme["door"],
             solid_capstyle="round",
             zorder=4,
         )
@@ -205,7 +279,7 @@ def plot_layout(layout_data, title):
             [door["x"], door["x"] + door["width"]],
             [door["y"], door["y"]],
             linewidth=5,
-            color="#111827",
+            color=theme["door"],
             solid_capstyle="round",
             zorder=4,
         )
@@ -217,11 +291,11 @@ def plot_layout(layout_data, title):
     ax.set_title(title)
     ax.set_xlabel("x (cm)")
     ax.set_ylabel("y (cm)")
-    ax.grid(True, color="#e5e1d8", linewidth=0.6, zorder=0)
-    ax.tick_params(colors="#657080", labelsize=8)
-    ax.title.set_color("#27313f")
-    ax.xaxis.label.set_color("#657080")
-    ax.yaxis.label.set_color("#657080")
+    ax.grid(True, color=theme["grid"], linewidth=0.6, zorder=0)
+    ax.tick_params(colors=theme["subtitle"], labelsize=8)
+    ax.title.set_color(theme["text"])
+    ax.xaxis.label.set_color(theme["subtitle"])
+    ax.yaxis.label.set_color(theme["subtitle"])
     for spine in ax.spines.values():
         spine.set_visible(False)
 
@@ -235,10 +309,24 @@ def update_object_position(layout_data, object_id, new_x, new_y):
         obj["y"] = new_y
 
 
+def ensure_base_dimensions(obj):
+    if "base_width" not in obj or "base_depth" not in obj:
+        if obj["orientation"] in (90, 270):
+            obj["base_width"] = obj["depth"]
+            obj["base_depth"] = obj["width"]
+        else:
+            obj["base_width"] = obj["width"]
+            obj["base_depth"] = obj["depth"]
+
+
 def get_base_dimensions(obj):
-    if obj["orientation"] in (90, 270):
-        return obj["depth"], obj["width"]
-    return obj["width"], obj["depth"]
+    ensure_base_dimensions(obj)
+    return obj["base_width"], obj["base_depth"]
+
+
+def initialize_object_dimensions(layout_data):
+    for obj in layout_data["objects"]:
+        ensure_base_dimensions(obj)
 
 
 def rotate_object(obj, orientation):
@@ -264,6 +352,19 @@ def clamp_session_position(object_id, obj, room_width, room_depth):
         st.session_state[x_key] = min(st.session_state[x_key], max_x)
     if y_key in st.session_state:
         st.session_state[y_key] = min(st.session_state[y_key], max_y)
+
+
+def render_draggable_layout(layout_data, editable_ids, theme):
+    return DRAGGABLE_LAYOUT(
+        layout_data=layout_data,
+        editable_ids=editable_ids,
+        object_colors=OBJECT_COLORS,
+        theme=theme,
+        default=None,
+        key="candidate_drag_layout",
+    )
+
+
 
 
 def format_cm(value):
@@ -493,11 +594,13 @@ def render_score_panel(title, result):
                 <span>Space score</span>
                 <strong>{result['space_score']:.4f}</strong>
             </div>
+            <div class="score-progress">
+                <div class="score-progress-fill" style="width:{result['space_score'] * 100:.1f}%"></div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.progress(result["space_score"])
 
     st.markdown(
         f"""
@@ -506,11 +609,13 @@ def render_score_panel(title, result):
                 <span>Workflow score</span>
                 <strong>{result['workflow_score']:.4f}</strong>
             </div>
+            <div class="score-progress">
+                <div class="score-progress-fill" style="width:{result['workflow_score'] * 100:.1f}%"></div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.progress(result["workflow_score"])
 
 
 def render_layout_legend():
@@ -527,8 +632,8 @@ def render_layout_legend():
         unsafe_allow_html=True,
     )
 
-
-apply_custom_style()
+theme = resolve_theme()
+apply_custom_style(theme)
 
 st.markdown(
     """
@@ -545,74 +650,79 @@ st.markdown(
 
 if "baseline_layout" not in st.session_state:
     st.session_state["baseline_layout"] = copy.deepcopy(layout_base)
+if "candidate_layout" not in st.session_state:
+    st.session_state["candidate_layout"] = copy.deepcopy(st.session_state["baseline_layout"])
 
 baseline_layout = copy.deepcopy(st.session_state["baseline_layout"])
-candidate_layout = copy.deepcopy(baseline_layout)
+initialize_object_dimensions(baseline_layout)
+candidate_layout = copy.deepcopy(st.session_state["candidate_layout"])
+initialize_object_dimensions(candidate_layout)
 
 room_width = candidate_layout["room"]["width"]
 room_depth = candidate_layout["room"]["depth"]
 
-st.sidebar.header("Candidate Layout Controls")
-
 editable_object_ids = ["fridge_1", "sink_1", "stove_1", "oven_1", "table_1"]
 
-for object_id in editable_object_ids:
-    obj = get_object_by_id(candidate_layout, object_id)
-    if obj is None:
-        continue
+drag_event = render_draggable_layout(candidate_layout, editable_object_ids, theme)
+if drag_event:
+    event_id = drag_event.get("event_id")
+    if event_id != st.session_state.get("last_drag_event_id"):
+        updated_candidate_layout = copy.deepcopy(st.session_state["candidate_layout"])
+        initialize_object_dimensions(updated_candidate_layout)
 
-    st.sidebar.subheader(obj["type"].capitalize())
+        for object_id, orientation in drag_event.get("orientations", {}).items():
+            if object_id not in editable_object_ids:
+                continue
+            obj = get_object_by_id(updated_candidate_layout, object_id)
+            if obj is None:
+                continue
+            rotate_object(obj, int(orientation))
 
-    new_orientation = st.sidebar.selectbox(
-        f"{obj['type']} rotation",
-        options=[0, 90, 180, 270],
-        index=[0, 90, 180, 270].index(obj["orientation"]),
-        format_func=lambda value: f"{value} deg",
-        key=f"{object_id}_orientation",
-    )
+            max_x = updated_candidate_layout["room"]["width"] - obj["width"]
+            max_y = updated_candidate_layout["room"]["depth"] - obj["depth"]
+            obj["x"] = min(obj["x"], max_x)
+            obj["y"] = min(obj["y"], max_y)
 
-    rotate_object(obj, new_orientation)
-    clamp_session_position(object_id, obj, room_width, room_depth)
+        for object_id, position in drag_event.get("positions", {}).items():
+            if object_id not in editable_object_ids:
+                continue
+            obj = get_object_by_id(updated_candidate_layout, object_id)
+            if obj is None:
+                continue
 
-    max_x = room_width - obj["width"]
-    max_y = room_depth - obj["depth"]
+            max_x = updated_candidate_layout["room"]["width"] - obj["width"]
+            max_y = updated_candidate_layout["room"]["depth"] - obj["depth"]
+            obj["x"] = min(int(position["x"]), max_x)
+            obj["y"] = min(int(position["y"]), max_y)
 
-    new_x = st.sidebar.number_input(
-        f"{obj['type']} x",
-        min_value=0,
-        max_value=max_x,
-        value=int(obj["x"]),
-        step=10,
-        key=f"{object_id}_x",
-    )
+        st.session_state["candidate_layout"] = copy.deepcopy(updated_candidate_layout)
+        st.session_state["last_drag_event_id"] = event_id
+        st.rerun()
 
-    new_y = st.sidebar.number_input(
-        f"{obj['type']} y",
-        min_value=0,
-        max_value=max_y,
-        value=int(obj["y"]),
-        step=10,
-        key=f"{object_id}_y",
-    )
-
-    update_object_position(candidate_layout, object_id, new_x, new_y)
+st.sidebar.header("Layout Actions")
+st.sidebar.caption("Move objects directly in the editor. Double click an object to rotate it by 90 deg.")
 
 is_valid = layout_is_valid(candidate_layout["objects"])
 
+if st.sidebar.button("Reset candidate to baseline"):
+    st.session_state["candidate_layout"] = copy.deepcopy(st.session_state["baseline_layout"])
+    st.rerun()
+
 if st.sidebar.button("Update baseline with candidate", disabled=not is_valid):
     st.session_state["baseline_layout"] = copy.deepcopy(candidate_layout)
+    st.session_state["candidate_layout"] = copy.deepcopy(candidate_layout)
     st.rerun()
 
 plot_col_1, plot_col_2 = st.columns(2)
 
 with plot_col_1:
     st.subheader("Baseline Layout")
-    fig_base = plot_layout(baseline_layout, "Baseline")
+    fig_base = plot_layout(baseline_layout, "Baseline", theme)
     st.pyplot(fig_base)
 
 with plot_col_2:
     st.subheader("Candidate Layout")
-    fig_candidate = plot_layout(candidate_layout, "Candidate")
+    fig_candidate = plot_layout(candidate_layout, "Candidate", theme)
     st.pyplot(fig_candidate)
 
 render_layout_legend()
