@@ -418,6 +418,63 @@ def build_workflow_rows(result):
     return rows
 
 
+def build_work_triangle_rows(result):
+    triangle = result.get("work_triangle")
+    if not triangle:
+        return [
+            {
+                "Element": "-",
+                "Distance": "-",
+                "Ideal range": "-",
+                "Score": "-",
+                "Effect": "work triangle details unavailable",
+            }
+        ]
+
+    rows = []
+    for leg in triangle["legs"]:
+        rows.append(
+            {
+                "Element": f"{leg['from']} -> {leg['to']}",
+                "Distance": format_cm(leg["length_cm"]),
+                "Ideal range": f"{leg['ideal_min_cm']:.0f}-{leg['ideal_max_cm']:.0f} cm",
+                "Score": f"{leg['score']:.4f}",
+                "Effect": describe_workflow_path(leg),
+            }
+        )
+
+    rows.append(
+        {
+            "Element": "triangle total",
+            "Distance": format_cm(triangle["total_cm"]),
+            "Ideal range": (
+                f"{triangle['total_ideal_min_cm']:.0f}-"
+                f"{triangle['total_ideal_max_cm']:.0f} cm"
+            ),
+            "Score": f"{triangle['total_score']:.4f}",
+            "Effect": describe_workflow_path(
+                {
+                    "length_cm": triangle["total_cm"],
+                    "ideal_min_cm": triangle["total_ideal_min_cm"],
+                    "ideal_max_cm": triangle["total_ideal_max_cm"],
+                }
+            ),
+        }
+    )
+
+    rows.append(
+        {
+            "Element": "triangle score",
+            "Distance": "-",
+            "Ideal range": "120-270 cm per leg, 400-790 cm total",
+            "Score": f"{triangle['triangle_score']:.4f}",
+            "Effect": "included in workflow score",
+        }
+    )
+
+    return rows
+
+
 def build_space_rows(result):
     required_keys = [
         "clearance_stats",
@@ -472,6 +529,46 @@ def build_space_rows(result):
 
 def build_suggestion_rows(result):
     suggestions = []
+
+    triangle = result.get("work_triangle")
+    if triangle:
+        for leg in triangle["legs"]:
+            effect = describe_workflow_path(leg)
+            if leg["score"] < 0.75:
+                if effect == "too far":
+                    suggestion = "Move these work centers closer or remove detours between them."
+                elif effect == "too close":
+                    suggestion = "Increase the working distance between these two centers."
+                elif effect == "blocked path":
+                    suggestion = "Clear the path so the triangle leg is reachable."
+                else:
+                    suggestion = "Review this side of the work triangle."
+
+                suggestions.append(
+                    {
+                        "Area": "Work triangle",
+                        "Issue": f"{leg['from']} -> {leg['to']} is {effect}",
+                        "Score": f"{leg['score']:.4f}",
+                        "Suggestion": suggestion,
+                    }
+                )
+
+        total_effect = describe_workflow_path(
+            {
+                "length_cm": triangle["total_cm"],
+                "ideal_min_cm": triangle["total_ideal_min_cm"],
+                "ideal_max_cm": triangle["total_ideal_max_cm"],
+            }
+        )
+        if triangle["total_score"] < 0.75:
+            suggestions.append(
+                {
+                    "Area": "Work triangle",
+                    "Issue": f"Triangle total is {total_effect}",
+                    "Score": f"{triangle['total_score']:.4f}",
+                    "Suggestion": "Keep the fridge, sink, and stove triangle within the recommended total travel distance.",
+                }
+            )
 
     workflow_paths = result.get("workflow_paths", [])
     for path in workflow_paths:
@@ -734,7 +831,7 @@ else:
     result_candidate = analyze_layout(candidate_layout)
     comparison = compare_layouts(result_base, result_candidate)
 
-    if "workflow_paths" not in result_candidate:
+    if "workflow_paths" not in result_candidate or "work_triangle" not in result_candidate:
         st.sidebar.warning("Score details are not loaded. Restart the app after updating logic.py.")
 
     score_col_1, score_col_2 = st.columns(2)
@@ -755,12 +852,16 @@ else:
     with detail_col_1:
         with st.expander("Baseline workflow details", expanded=False):
             st.table(build_workflow_rows(result_base))
+        with st.expander("Baseline work triangle details", expanded=False):
+            st.table(build_work_triangle_rows(result_base))
         with st.expander("Baseline space details", expanded=False):
             st.table(build_space_rows(result_base))
 
     with detail_col_2:
         with st.expander("Candidate workflow details", expanded=True):
             st.table(build_workflow_rows(result_candidate))
+        with st.expander("Candidate work triangle details", expanded=True):
+            st.table(build_work_triangle_rows(result_candidate))
         with st.expander("Candidate space details", expanded=False):
             st.table(build_space_rows(result_candidate))
 

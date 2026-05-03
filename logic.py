@@ -2,6 +2,10 @@ import math
 from collections import deque
 
 CELL_SIZE = 10  # cm
+WORK_TRIANGLE_LEG_MIN_CM = 120
+WORK_TRIANGLE_LEG_MAX_CM = 270
+WORK_TRIANGLE_TOTAL_MIN_CM = 400
+WORK_TRIANGLE_TOTAL_MAX_CM = 790
 
 layout_base = {
     "room": {
@@ -485,6 +489,68 @@ def compute_workflow_path_stats(layout_data, grid, cell_size):
         "avg_workflow_path_cm": avg_length_cm
     }
 
+def compute_work_triangle_stats(layout_data, grid, cell_size):
+    points_cm = get_workflow_points(layout_data)
+
+    triangle_pairs = [
+        ("fridge", "sink"),
+        ("sink", "stove"),
+        ("stove", "fridge")
+    ]
+
+    legs = []
+    leg_scores = []
+    leg_lengths = []
+
+    for start_name, end_name in triangle_pairs:
+        start_cell = point_cm_to_cell(points_cm[start_name], cell_size)
+        end_cell = point_cm_to_cell(points_cm[end_name], cell_size)
+        path_length_cells = compute_shortest_path_length(grid, start_cell, end_cell)
+
+        if path_length_cells is None:
+            length_cm = None
+        else:
+            length_cm = path_length_cells * cell_size
+            leg_lengths.append(length_cm)
+
+        score = score_distance_with_ideal_range(
+            length_cm,
+            WORK_TRIANGLE_LEG_MIN_CM,
+            WORK_TRIANGLE_LEG_MAX_CM
+        )
+        leg_scores.append(score)
+
+        legs.append({
+            "from": start_name,
+            "to": end_name,
+            "length_cm": length_cm,
+            "ideal_min_cm": WORK_TRIANGLE_LEG_MIN_CM,
+            "ideal_max_cm": WORK_TRIANGLE_LEG_MAX_CM,
+            "score": score
+        })
+
+    if len(leg_lengths) == len(triangle_pairs):
+        total_cm = sum(leg_lengths)
+        total_score = score_distance_with_ideal_range(
+            total_cm,
+            WORK_TRIANGLE_TOTAL_MIN_CM,
+            WORK_TRIANGLE_TOTAL_MAX_CM
+        )
+    else:
+        total_cm = None
+        total_score = 0.0
+
+    triangle_score = (sum(leg_scores) + total_score) / (len(leg_scores) + 1)
+
+    return {
+        "legs": legs,
+        "total_cm": total_cm,
+        "total_ideal_min_cm": WORK_TRIANGLE_TOTAL_MIN_CM,
+        "total_ideal_max_cm": WORK_TRIANGLE_TOTAL_MAX_CM,
+        "total_score": total_score,
+        "triangle_score": triangle_score
+    }
+
 def compute_workflow_score(workflow_path_stats):
     if workflow_path_stats is None:
         return None
@@ -529,7 +595,7 @@ def compute_workflow_score(workflow_path_stats):
 
     return {
         "scored_paths": scored_paths,
-        "workflow_score": avg_score
+        "workflow_route_score": avg_score
     }
 
 def score_distance_with_ideal_range(distance_cm, ideal_min, ideal_max):
@@ -597,6 +663,11 @@ def analyze_layout(layout_data):
 
     workflow_path_stats = compute_workflow_path_stats(layout_data, grid, CELL_SIZE)
     workflow_score_stats = compute_workflow_score(workflow_path_stats)
+    work_triangle_stats = compute_work_triangle_stats(layout_data, grid, CELL_SIZE)
+    workflow_score = (
+        workflow_score_stats["workflow_route_score"] +
+        work_triangle_stats["triangle_score"]
+    ) / 2.0
 
     space_score_stats = compute_space_score(
         clearance_stats,
@@ -606,7 +677,9 @@ def analyze_layout(layout_data):
 
     return {
         "space_score": space_score_stats["space_score"],
-        "workflow_score": workflow_score_stats["workflow_score"],
+        "workflow_score": workflow_score,
+        "workflow_route_score": workflow_score_stats["workflow_route_score"],
+        "work_triangle": work_triangle_stats,
         "space_components": space_score_stats["components"],
         "clearance_stats": clearance_stats,
         "walkability_stats": walkability_stats,
