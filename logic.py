@@ -380,6 +380,7 @@ def compute_shortest_path_to_any(grid, start_cell, end_cells):
 
 def get_door_point(layout_data):
     door = layout_data["door"]
+    room = layout_data["room"]
 
     x = door["x"]
     y = door["y"]
@@ -392,6 +393,9 @@ def get_door_point(layout_data):
     else:
         point_x = x + width // 2
         point_y = y
+
+    point_x = min(max(point_x, 0), room["width"] - CELL_SIZE)
+    point_y = min(max(point_y, 0), room["depth"] - CELL_SIZE)
 
     return (point_x, point_y)
 
@@ -414,7 +418,8 @@ def get_workflow_points(layout_data):
     points["fridge"] = get_interaction_point(fridge, CELL_SIZE)
     points["sink"] = get_interaction_point(sink, CELL_SIZE)
     points["stove"] = get_interaction_point(stove, CELL_SIZE)
-    points["table"] = get_interaction_point(table, CELL_SIZE)
+    if table is not None:
+        points["table"] = get_interaction_point(table, CELL_SIZE)
 
     return points
 
@@ -457,27 +462,28 @@ def compute_workflow_path_stats(layout_data, grid, cell_size):
             "length_cm": path_length_cm
         })
 
-    # special handling for stove -> table
-    stove_cm = points_cm["stove"]
-    stove_cell = point_cm_to_cell(stove_cm, cell_size)
-
     table_obj = get_object_by_id(layout_data, "table_1")
-    table_candidate_points_cm = get_table_candidate_points(table_obj, cell_size)
-    table_candidate_cells = [point_cm_to_cell(p, cell_size) for p in table_candidate_points_cm]
+    if table_obj is not None:
+        # special handling for stove -> table
+        stove_cm = points_cm["stove"]
+        stove_cell = point_cm_to_cell(stove_cm, cell_size)
 
-    best_length_cells, best_table_cell = compute_shortest_path_to_any(grid, stove_cell, table_candidate_cells)
+        table_candidate_points_cm = get_table_candidate_points(table_obj, cell_size)
+        table_candidate_cells = [point_cm_to_cell(p, cell_size) for p in table_candidate_points_cm]
 
-    if best_length_cells is not None:
-        best_length_cm = best_length_cells * cell_size
-        valid_lengths.append(best_length_cm)
-    else:
-        best_length_cm = None
+        best_length_cells, best_table_cell = compute_shortest_path_to_any(grid, stove_cell, table_candidate_cells)
 
-    path_results.append({
-        "from": "stove",
-        "to": "table",
-        "length_cm": best_length_cm
-    })
+        if best_length_cells is not None:
+            best_length_cm = best_length_cells * cell_size
+            valid_lengths.append(best_length_cm)
+        else:
+            best_length_cm = None
+
+        path_results.append({
+            "from": "stove",
+            "to": "table",
+            "length_cm": best_length_cm
+        })
 
     if not valid_lengths:
         return None
