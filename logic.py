@@ -655,7 +655,7 @@ def compute_space_score(clearance_stats, walkability_stats, usable_fragmentation
         }
     }
 
-def analyze_layout(layout_data):
+def analyze_space_layout(layout_data):
     grid = create_empty_grid(layout_data, CELL_SIZE)
     place_objects_on_grid(grid, layout_data, CELL_SIZE)
 
@@ -683,13 +683,31 @@ def analyze_layout(layout_data):
 
     return {
         "space_score": space_score_stats["space_score"],
-        "workflow_score": workflow_score,
-        "workflow_route_score": workflow_score_stats["workflow_route_score"],
-        "work_triangle": work_triangle_stats,
         "space_components": space_score_stats["components"],
         "clearance_stats": clearance_stats,
         "walkability_stats": walkability_stats,
         "usable_fragmentation_stats": usable_fragmentation_stats,
+    }
+
+def analyze_layout(layout_data):
+    grid = create_empty_grid(layout_data, CELL_SIZE)
+    place_objects_on_grid(grid, layout_data, CELL_SIZE)
+
+    space_result = analyze_space_layout(layout_data)
+
+    workflow_path_stats = compute_workflow_path_stats(layout_data, grid, CELL_SIZE)
+    workflow_score_stats = compute_workflow_score(workflow_path_stats)
+    work_triangle_stats = compute_work_triangle_stats(layout_data, grid, CELL_SIZE)
+    workflow_score = (
+        workflow_score_stats["workflow_route_score"] +
+        work_triangle_stats["triangle_score"]
+    ) / 2.0
+
+    return {
+        **space_result,
+        "workflow_score": workflow_score,
+        "workflow_route_score": workflow_score_stats["workflow_route_score"],
+        "work_triangle": work_triangle_stats,
         "workflow_paths": workflow_score_stats["scored_paths"]
     }
 

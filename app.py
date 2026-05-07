@@ -6,7 +6,14 @@ import streamlit as st
 import streamlit.components.v1 as components
 from matplotlib.patches import Rectangle
 
-from logic import CELL_SIZE, analyze_layout, compare_layouts, layout_base, layout_is_valid
+from logic import (
+    CELL_SIZE,
+    analyze_layout,
+    analyze_space_layout,
+    compare_layouts,
+    layout_base,
+    layout_is_valid,
+)
 
 
 st.set_page_config(page_title="Kitchen Layout Decision Support", layout="wide")
@@ -1083,11 +1090,14 @@ def build_created_room_layout():
 def build_created_room_score_layout():
     layout_data = build_created_room_layout()
 
-    required_ids = {
-        "fridge": "fridge_1",
-        "sink": "sink_1",
-        "stove": "stove_1",
-    }
+    selected_room_key = st.session_state["created_room_type"]
+    required_ids = {}
+    if selected_room_key == "kitchen":
+        required_ids = {
+            "fridge": "fridge_1",
+            "sink": "sink_1",
+            "stove": "stove_1",
+        }
     optional_ids = {
         "table": "table_1",
     }
@@ -1594,7 +1604,7 @@ def build_suggestion_rows(result):
     return suggestions
 
 
-def render_score_panel(title, result):
+def render_score_panel(title, result, show_workflow=True):
     st.markdown(
         f"""
         <div class="score-panel">
@@ -1611,20 +1621,21 @@ def render_score_panel(title, result):
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        f"""
-        <div class="score-panel">
-            <div class="score-label">
-                <span>Workflow score</span>
-                <strong>{result['workflow_score']:.4f}</strong>
+    if show_workflow and "workflow_score" in result:
+        st.markdown(
+            f"""
+            <div class="score-panel">
+                <div class="score-label">
+                    <span>Workflow score</span>
+                    <strong>{result['workflow_score']:.4f}</strong>
+                </div>
+                <div class="score-progress">
+                    <div class="score-progress-fill" style="width:{result['workflow_score'] * 100:.1f}%"></div>
+                </div>
             </div>
-            <div class="score-progress">
-                <div class="score-progress-fill" style="width:{result['workflow_score'] * 100:.1f}%"></div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_layout_legend():
@@ -1908,20 +1919,29 @@ def render_create_room_page(theme):
                     )
                 else:
                     try:
-                        result_created = analyze_layout(score_layout)
+                        is_kitchen = selected_room_key == "kitchen"
+                        result_created = (
+                            analyze_layout(score_layout)
+                            if is_kitchen
+                            else analyze_space_layout(score_layout)
+                        )
                     except Exception as exc:
                         st.warning(f"Scores are not available for this layout yet: {exc}")
                     else:
-                        render_score_panel("Created layout", result_created)
+                        render_score_panel("Created layout", result_created, show_workflow=is_kitchen)
                         with st.expander("Suggestions", expanded=True):
                             st.table(build_suggestion_rows(result_created))
-                        detail_col_1, detail_col_2 = st.columns(2)
-                        with detail_col_1:
-                            with st.expander("Workflow details", expanded=False):
-                                st.table(build_workflow_rows(result_created))
-                            with st.expander("Work triangle details", expanded=False):
-                                st.table(build_work_triangle_rows(result_created))
-                        with detail_col_2:
+                        if is_kitchen:
+                            detail_col_1, detail_col_2 = st.columns(2)
+                            with detail_col_1:
+                                with st.expander("Workflow details", expanded=False):
+                                    st.table(build_workflow_rows(result_created))
+                                with st.expander("Work triangle details", expanded=False):
+                                    st.table(build_work_triangle_rows(result_created))
+                            with detail_col_2:
+                                with st.expander("Space details", expanded=False):
+                                    st.table(build_space_rows(result_created))
+                        else:
                             with st.expander("Space details", expanded=False):
                                 st.table(build_space_rows(result_created))
 
