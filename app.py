@@ -9,11 +9,14 @@ from matplotlib.patches import Rectangle
 from logic import (
     CELL_SIZE,
     analyze_layout,
-    analyze_space_layout,
     compare_layouts,
     layout_base,
     layout_is_valid,
 )
+import logic
+
+
+analyze_space_layout = getattr(logic, "analyze_space_layout", None)
 
 
 st.set_page_config(page_title="Kitchen Layout Decision Support", layout="wide")
@@ -1920,30 +1923,34 @@ def render_create_room_page(theme):
                 else:
                     try:
                         is_kitchen = selected_room_key == "kitchen"
-                        result_created = (
-                            analyze_layout(score_layout)
-                            if is_kitchen
-                            else analyze_space_layout(score_layout)
-                        )
+                        if is_kitchen:
+                            result_created = analyze_layout(score_layout)
+                        elif analyze_space_layout is not None:
+                            result_created = analyze_space_layout(score_layout)
+                        else:
+                            result_created = None
                     except Exception as exc:
                         st.warning(f"Scores are not available for this layout yet: {exc}")
                     else:
-                        render_score_panel("Created layout", result_created, show_workflow=is_kitchen)
-                        with st.expander("Suggestions", expanded=True):
-                            st.table(build_suggestion_rows(result_created))
-                        if is_kitchen:
-                            detail_col_1, detail_col_2 = st.columns(2)
-                            with detail_col_1:
-                                with st.expander("Workflow details", expanded=False):
-                                    st.table(build_workflow_rows(result_created))
-                                with st.expander("Work triangle details", expanded=False):
-                                    st.table(build_work_triangle_rows(result_created))
-                            with detail_col_2:
+                        if result_created is None:
+                            st.info("Space scoring is not available until logic.py is updated in the running app.")
+                        else:
+                            render_score_panel("Created layout", result_created, show_workflow=is_kitchen)
+                            with st.expander("Suggestions", expanded=True):
+                                st.table(build_suggestion_rows(result_created))
+                            if is_kitchen:
+                                detail_col_1, detail_col_2 = st.columns(2)
+                                with detail_col_1:
+                                    with st.expander("Workflow details", expanded=False):
+                                        st.table(build_workflow_rows(result_created))
+                                    with st.expander("Work triangle details", expanded=False):
+                                        st.table(build_work_triangle_rows(result_created))
+                                with detail_col_2:
+                                    with st.expander("Space details", expanded=False):
+                                        st.table(build_space_rows(result_created))
+                            else:
                                 with st.expander("Space details", expanded=False):
                                     st.table(build_space_rows(result_created))
-                        else:
-                            with st.expander("Space details", expanded=False):
-                                st.table(build_space_rows(result_created))
 
 
 theme = resolve_theme()
