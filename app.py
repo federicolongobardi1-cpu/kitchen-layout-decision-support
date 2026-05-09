@@ -1,2093 +1,964 @@
-import copy
+from collections import deque
+import heapq
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from matplotlib.patches import Rectangle
-
-from logic import (
-    CELL_SIZE,
-    analyze_layout,
-    compare_layouts,
-    layout_base,
-    layout_is_valid,
-)
-import logic
+from matplotlib.patches import Arc, Circle, Ellipse, FancyBboxPatch, Rectangle
 
 
-analyze_space_layout = getattr(logic, "analyze_space_layout", None)
+st.set_page_config(page_title="Interior Layout Audit", page_icon="▧", layout="wide")
 
+ROOM_W_CM = 900
+ROOM_H_CM = 400
+CELL_CM = 10
+GRID_W = ROOM_W_CM // CELL_CM
+GRID_H = ROOM_H_CM // CELL_CM
+WALL_CM = 18
 
-st.set_page_config(page_title="Kitchen Layout Decision Support", layout="wide")
+COMPONENT_DIR = Path(__file__).parent / "grid_component"
+grid_component = components.declare_component("grid_editor", path=str(COMPONENT_DIR))
 
-
-OBJECT_COLORS = {
-    "fridge": "#5B8DEF",
-    "sink": "#2FB7A7",
-    "stove": "#F28C52",
-    "oven": "#B06AB3",
-    "table": "#D9A441",
-    "sofa": "#6A8D73",
-    "tv": "#2F3A45",
-    "bed": "#9B7EDE",
-    "wardrobe": "#A66E4A",
-    "shower": "#4FB3D8",
-    "toilet": "#A8B3BD",
-    "vanity": "#C7956D",
-    "outdoor_table": "#7AA95C",
-    "chair": "#D8A64F",
-    "plant": "#3E9C5C",
-    "pantry": "#C58A3A",
-    "countertop": "#8B9A46",
+TYPE_COLORS = {
+    "door": "#f8fafc",
+    "window": "#bfdbfe",
+    "counter": "#f3f4f6",
+    "storage": "#e5e7eb",
+    "sink": "#e0f2fe",
+    "stove": "#fee2e2",
+    "dining_set": "#fef3c7",
+    "sofa": "#dcfce7",
+    "tv": "#ede9fe",
+    "plant": "#bbf7d0",
+    "fridge": "#e0e7ff",
 }
-
-DRAGGABLE_LAYOUT = components.declare_component(
-    "draggable_layout",
-    path=str(Path(__file__).parent / "components" / "draggable_layout"),
-)
-OPENING_LAYOUT = components.declare_component(
-    "opening_layout",
-    path=str(Path(__file__).parent / "components" / "opening_layout"),
-)
-
-APP_DIR = Path(__file__).parent
-BRAND_GREEN = "#35C462"
-BRAND_GREEN_DARK = "#23994B"
-BRAND_GREEN_SOFT = "#E8F7EE"
-
-INTERIOR_IMAGES = [
-    "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=80",
-    "https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=900&q=80",
-    "https://images.unsplash.com/photo-1556911220-bff31c812dba?auto=format&fit=crop&w=900&q=80",
-    "https://images.unsplash.com/photo-1616486338812-3dadae4b4ace?auto=format&fit=crop&w=900&q=80",
-    "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?auto=format&fit=crop&w=900&q=80",
-]
-
-ROOM_TYPES = {
-    "kitchen": {
-        "label": "Kitchen",
-        "description": "Cooking workflow and appliance placement.",
-        "image": "https://images.unsplash.com/photo-1556911220-bff31c812dba?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 400,
-        "depth_cm": 300,
-    },
-    "bathroom": {
-        "label": "Bathroom",
-        "description": "Fixtures, access clearances, and compact layouts.",
-        "image": "https://images.unsplash.com/photo-1620626011761-996317b8d101?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 240,
-        "depth_cm": 220,
-    },
-    "living_room": {
-        "label": "Living room",
-        "description": "Seating, media wall, and circulation space.",
-        "image": "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 500,
-        "depth_cm": 400,
-    },
-    "bedroom": {
-        "label": "Bedroom",
-        "description": "Bed, storage, and comfortable walking paths.",
-        "image": "https://images.unsplash.com/photo-1616486338812-3dadae4b4ace?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 420,
-        "depth_cm": 360,
-    },
-    "outdoor": {
-        "label": "Outdoor",
-        "description": "Terrace or garden furniture arrangement.",
-        "image": "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 600,
-        "depth_cm": 400,
-    },
-    "dining_room": {
-        "label": "Dining room",
-        "description": "Table placement, circulation, and serving paths.",
-        "image": "https://images.unsplash.com/photo-1617104551722-3b2d51366400?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 420,
-        "depth_cm": 360,
-    },
-    "home_office": {
-        "label": "Home office",
-        "description": "Desk, storage, and ergonomic working clearance.",
-        "image": "https://images.unsplash.com/photo-1593476550610-87baa860004a?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 320,
-        "depth_cm": 280,
-    },
-    "laundry_room": {
-        "label": "Laundry room",
-        "description": "Appliance access, storage, and utility workflow.",
-        "image": "https://images.unsplash.com/photo-1626806787461-102c1bfaaea1?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 260,
-        "depth_cm": 240,
-    },
-    "entryway": {
-        "label": "Entryway",
-        "description": "Arrival flow, coats, shoes, and passage width.",
-        "image": "https://images.unsplash.com/photo-1600566753086-00f18fb6b3ea?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 260,
-        "depth_cm": 200,
-    },
-    "storage": {
-        "label": "Storage",
-        "description": "Shelving, wardrobes, and compact service space.",
-        "image": "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 240,
-        "depth_cm": 220,
-    },
-    "garage": {
-        "label": "Garage",
-        "description": "Parking area, storage zones, and access paths.",
-        "image": "https://images.unsplash.com/photo-1597007056704-67bf2068d5b2?auto=format&fit=crop&w=900&q=80",
-        "width_cm": 600,
-        "depth_cm": 550,
-    },
-}
-
-FURNITURE_CATALOG = {
-    "kitchen": [
-        {"type": "fridge", "label": "Fridge", "width": 60, "depth": 60},
-        {"type": "oven", "label": "Oven", "width": 60, "depth": 60},
-        {"type": "sink", "label": "Sink", "width": 80, "depth": 60},
-        {"type": "stove", "label": "Stove", "width": 60, "depth": 60},
-        {"type": "countertop", "label": "Kitchen worktop", "width": 120, "depth": 60},
-        {"type": "table", "label": "Table", "width": 120, "depth": 80},
-        {"type": "pantry", "label": "Pantry", "width": 80, "depth": 60},
-    ],
-    "bathroom": [
-        {"type": "shower", "label": "Shower", "width": 90, "depth": 90},
-        {"type": "toilet", "label": "Toilet", "width": 40, "depth": 70},
-        {"type": "sink", "label": "Sink", "width": 70, "depth": 45},
-        {"type": "vanity", "label": "Vanity", "width": 90, "depth": 50},
-    ],
-    "living_room": [
-        {"type": "sofa", "label": "Sofa", "width": 220, "depth": 90},
-        {"type": "tv", "label": "TV unit", "width": 160, "depth": 40},
-        {"type": "table", "label": "Coffee table", "width": 110, "depth": 60},
-        {"type": "plant", "label": "Plant", "width": 40, "depth": 40},
-    ],
-    "bedroom": [
-        {"type": "bed", "label": "Bed", "width": 160, "depth": 200},
-        {"type": "wardrobe", "label": "Wardrobe", "width": 180, "depth": 60},
-        {"type": "table", "label": "Desk", "width": 120, "depth": 60},
-        {"type": "chair", "label": "Chair", "width": 50, "depth": 50},
-    ],
-    "outdoor": [
-        {"type": "outdoor_table", "label": "Outdoor table", "width": 160, "depth": 90},
-        {"type": "chair", "label": "Chair", "width": 55, "depth": 55},
-        {"type": "sofa", "label": "Outdoor sofa", "width": 210, "depth": 85},
-        {"type": "plant", "label": "Planter", "width": 60, "depth": 60},
-    ],
-    "dining_room": [
-        {"type": "table", "label": "Dining table", "width": 180, "depth": 90},
-        {"type": "chair", "label": "Chair", "width": 50, "depth": 50},
-        {"type": "wardrobe", "label": "Sideboard", "width": 160, "depth": 45},
-        {"type": "plant", "label": "Plant", "width": 40, "depth": 40},
-    ],
-    "home_office": [
-        {"type": "table", "label": "Desk", "width": 140, "depth": 70},
-        {"type": "chair", "label": "Office chair", "width": 60, "depth": 60},
-        {"type": "wardrobe", "label": "Bookshelf", "width": 120, "depth": 35},
-        {"type": "plant", "label": "Plant", "width": 40, "depth": 40},
-    ],
-    "laundry_room": [
-        {"type": "vanity", "label": "Washing machine", "width": 60, "depth": 65},
-        {"type": "vanity", "label": "Dryer", "width": 60, "depth": 65},
-        {"type": "sink", "label": "Utility sink", "width": 70, "depth": 55},
-        {"type": "wardrobe", "label": "Storage cabinet", "width": 100, "depth": 45},
-    ],
-    "entryway": [
-        {"type": "wardrobe", "label": "Coat closet", "width": 120, "depth": 55},
-        {"type": "table", "label": "Console", "width": 110, "depth": 35},
-        {"type": "chair", "label": "Bench", "width": 120, "depth": 45},
-        {"type": "plant", "label": "Plant", "width": 40, "depth": 40},
-    ],
-    "storage": [
-        {"type": "wardrobe", "label": "Shelving unit", "width": 120, "depth": 45},
-        {"type": "wardrobe", "label": "Cabinet", "width": 90, "depth": 50},
-        {"type": "table", "label": "Utility table", "width": 120, "depth": 60},
-        {"type": "chair", "label": "Step stool", "width": 45, "depth": 45},
-    ],
-    "garage": [
-        {"type": "table", "label": "Car footprint", "width": 200, "depth": 450},
-        {"type": "wardrobe", "label": "Storage shelves", "width": 180, "depth": 50},
-        {"type": "table", "label": "Workbench", "width": 180, "depth": 70},
-        {"type": "chair", "label": "Bike area", "width": 180, "depth": 70},
-    ],
-}
-
-OPENING_SIDES = ["top", "right", "bottom", "left"]
-
-OPENING_CATEGORIES = {
-    "door": {
-        "label": "Doors",
-        "image": "https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?auto=format&fit=crop&w=700&q=80",
-    },
-    "window": {
-        "label": "Windows",
-        "image": "https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=700&q=80",
-    },
-}
-
-OPENING_TYPES = {
-    "door": [
-        {"type": "single", "label": "Single", "width": 90, "image": "https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?auto=format&fit=crop&w=700&q=80"},
-        {"type": "double", "label": "Double", "width": 160, "image": "https://images.unsplash.com/photo-1600566752355-35792bedcfea?auto=format&fit=crop&w=700&q=80"},
-        {"type": "sliding", "label": "Sliding", "width": 180, "image": "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?auto=format&fit=crop&w=700&q=80"},
-    ],
-    "window": [
-        {"type": "window_1", "label": "Window 1", "width": 90, "image": "https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=700&q=80"},
-        {"type": "window_2", "label": "Window 2", "width": 150, "image": "https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=700&q=80"},
-        {"type": "window_3", "label": "Window 3", "width": 220, "image": "https://images.unsplash.com/photo-1600607688969-a5bfcd646154?auto=format&fit=crop&w=700&q=80"},
-    ],
-}
-
-def hex_to_rgb(color):
-    color = color.lstrip("#")
-    if len(color) == 3:
-        color = "".join(ch * 2 for ch in color)
-    return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
-
-
-def rgb_to_hex(rgb):
-    return "#{:02x}{:02x}{:02x}".format(*rgb)
-
-
-def mix_colors(base_color, overlay_color, ratio):
-    base_rgb = hex_to_rgb(base_color)
-    overlay_rgb = hex_to_rgb(overlay_color)
-    mixed = tuple(
-        round(base * (1 - ratio) + overlay * ratio)
-        for base, overlay in zip(base_rgb, overlay_rgb)
-    )
-    return rgb_to_hex(mixed)
-
-
-def resolve_theme():
-    primary = st.get_option("theme.primaryColor") or "#5B8DEF"
-    background = st.get_option("theme.backgroundColor") or "#ffffff"
-    secondary_background = st.get_option("theme.secondaryBackgroundColor") or "#f0f2f6"
-    text = st.get_option("theme.textColor") or "#262730"
-    base = (st.get_option("theme.base") or "light").lower()
-    is_dark = base == "dark"
-
-    return {
-        "app_bg": background,
-        "text": text,
-        "sidebar_bg": secondary_background,
-        "panel_bg": background,
-        "panel_border": mix_colors(secondary_background, text, 0.16 if is_dark else 0.12),
-        "subtitle": mix_colors(text, background, 0.38 if is_dark else 0.45),
-        "muted": mix_colors(text, background, 0.28 if is_dark else 0.35),
-        "progress_bg": mix_colors(primary, background, 0.78 if is_dark else 0.84),
-        "progress_fill": primary,
-        "button_bg": primary,
-        "button_border": mix_colors(primary, text, 0.18),
-        "button_hover": mix_colors(primary, text, 0.12),
-        "button_hover_border": mix_colors(primary, text, 0.28),
-        "button_disabled_bg": mix_colors(secondary_background, text, 0.12 if is_dark else 0.06),
-        "button_disabled_text": mix_colors(text, background, 0.52),
-        "room_bg": mix_colors(background, secondary_background, 0.38 if is_dark else 0.5),
-        "grid": mix_colors(background, text, 0.14 if is_dark else 0.08),
-        "plot_text": text,
-        "door": text,
-        "fallback_object": mix_colors(secondary_background, text, 0.32 if is_dark else 0.24),
-    }
-
-
-def apply_custom_style(theme):
-    st.markdown(
-        f"""
-        <style>
-        .stApp {{
-            background: {theme["app_bg"]};
-            color: {theme["text"]};
-        }}
-
-        [data-testid="stSidebar"] {{
-            background: {theme["sidebar_bg"]};
-            border-right: 1px solid {theme["panel_border"]};
-        }}
-
-        .app-header {{
-            padding: 1.1rem 1.25rem;
-            border: 1px solid {theme["panel_border"]};
-            background: {theme["panel_bg"]};
-            border-radius: 8px;
-            margin-bottom: 1rem;
-        }}
-
-        .app-title {{
-            font-size: 2rem;
-            font-weight: 700;
-            line-height: 1.1;
-            margin: 0 0 0.35rem 0;
-            color: {theme["text"]};
-        }}
-
-        .app-subtitle {{
-            font-size: 1rem;
-            margin: 0;
-            color: {theme["subtitle"]};
-        }}
-
-        .landing-background {{
-            position: fixed;
-            inset: 0;
-            z-index: 0;
-            overflow: hidden;
-            background: #111711;
-        }}
-
-        .landing-bg-slide {{
-            position: absolute;
-            inset: 0;
-            background-size: cover;
-            background-position: center;
-            opacity: 0;
-            animation: landing-bg-fade 25s infinite;
-        }}
-
-        .landing-background::after {{
-            content: "";
-            position: absolute;
-            inset: 0;
-            background:
-                linear-gradient(180deg, rgba(6, 14, 8, 0.35), rgba(6, 14, 8, 0.62)),
-                linear-gradient(90deg, rgba(6, 14, 8, 0.52), rgba(6, 14, 8, 0.12));
-        }}
-
-        @keyframes landing-bg-fade {{
-            0% {{
-                opacity: 1;
-            }}
-            16% {{
-                opacity: 1;
-            }}
-            24% {{
-                opacity: 0;
-            }}
-            100% {{
-                opacity: 0;
-            }}
-        }}
-
-        .landing-shell {{
-            position: relative;
-            z-index: 1;
-            min-height: 58vh;
-            display: flex;
-            align-items: center;
-            justify-content: flex-start;
-            padding: 5rem 1rem 1rem 1rem;
-        }}
-
-        .landing-panel {{
-            width: min(680px, 100%);
-            text-align: left;
-        }}
-
-        .landing-title {{
-            font-size: 3rem;
-            font-weight: 800;
-            line-height: 1.05;
-            margin: 0 0 0.75rem 0;
-            color: #ffffff;
-            text-shadow: 0 2px 18px rgba(0, 0, 0, 0.28);
-        }}
-
-        .landing-brand-dark {{
-            color: #ffffff;
-        }}
-
-        .landing-brand-green {{
-            color: {BRAND_GREEN};
-        }}
-
-        .landing-kicker {{
-            color: rgba(255, 255, 255, 0.82);
-            font-size: 1.05rem;
-            font-weight: 700;
-            letter-spacing: 0;
-            margin-bottom: 0.55rem;
-        }}
-
-        .landing-subtitle {{
-            font-size: 1.15rem;
-            line-height: 1.55;
-            margin: 0 0 1.4rem 0;
-            color: rgba(255, 255, 255, 0.86);
-            max-width: 620px;
-        }}
-
-        .landing-actions {{
-            position: relative;
-            z-index: 1;
-            margin-top: -4rem;
-            padding-bottom: 4rem;
-        }}
-
-        .landing-actions div.stButton > button {{
-            min-height: 4.5rem;
-            width: 100%;
-            border-radius: 8px;
-            border: 1px solid {BRAND_GREEN_DARK};
-            background: {BRAND_GREEN};
-            color: #ffffff;
-            font-size: 1.05rem;
-            font-weight: 750;
-        }}
-
-        .landing-actions div.stButton > button:hover {{
-            background: {BRAND_GREEN_DARK};
-            color: #ffffff;
-            border-color: {BRAND_GREEN_DARK};
-        }}
-
-        div.stButton > button {{
-            background: {BRAND_GREEN};
-            color: #ffffff;
-            border: 1px solid {BRAND_GREEN_DARK};
-        }}
-
-        div.stButton > button:hover {{
-            background: {BRAND_GREEN_DARK};
-            color: #ffffff;
-            border-color: {BRAND_GREEN_DARK};
-        }}
-
-        @media (max-width: 760px) {{
-            .landing-shell {{
-                min-height: 58vh;
-                padding-top: 4rem;
-            }}
-
-            .landing-title {{
-                font-size: 2.1rem;
-            }}
-
-            .landing-actions {{
-                margin-top: -2rem;
-            }}
-        }}
-
-        .placeholder-panel {{
-            border: 1px solid {theme["panel_border"]};
-            background: {theme["panel_bg"]};
-            border-radius: 8px;
-            padding: 1.25rem;
-            margin-top: 1rem;
-        }}
-
-        .room-form-note {{
-            color: {theme["muted"]};
-            font-size: 0.95rem;
-            margin: 0.4rem 0 1rem 0;
-        }}
-
-        .room-summary {{
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-            margin: 0.75rem 0 1rem 0;
-        }}
-
-        .room-summary-item {{
-            border: 1px solid {theme["panel_border"]};
-            background: {theme["panel_bg"]};
-            border-radius: 8px;
-            padding: 0.65rem 0.8rem;
-            color: {theme["text"]};
-            font-weight: 700;
-        }}
-
-        .room-type-card {{
-            border: 1px solid {theme["panel_border"]};
-            background: {theme["panel_bg"]};
-            border-radius: 8px;
-            overflow: hidden;
-            margin-bottom: 0.5rem;
-        }}
-
-        .room-type-image {{
-            height: 120px;
-            background-size: cover;
-            background-position: center;
-        }}
-
-        .room-type-body {{
-            padding: 0.75rem;
-        }}
-
-        .room-type-title {{
-            color: {theme["text"]};
-            font-size: 1rem;
-            font-weight: 800;
-            margin-bottom: 0.25rem;
-        }}
-
-        .room-type-description {{
-            color: {theme["muted"]};
-            font-size: 0.86rem;
-            line-height: 1.35;
-            min-height: 2.35rem;
-        }}
-
-        .selected-room-label {{
-            color: {BRAND_GREEN_DARK};
-            font-size: 0.95rem;
-            font-weight: 800;
-            margin: 0 0 0.75rem 0;
-        }}
-
-        .furniture-list {{
-            margin-top: 0.75rem;
-        }}
-
-        .furniture-item {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.75rem;
-            color: {theme["text"]};
-            border-bottom: 1px solid {theme["panel_border"]};
-            padding: 0.45rem 0;
-            font-size: 0.92rem;
-        }}
-
-        .opening-card {{
-            border: 1px solid {theme["panel_border"]};
-            background: {theme["panel_bg"]};
-            border-radius: 8px;
-            overflow: hidden;
-            margin-bottom: 0.45rem;
-        }}
-
-        .opening-card-image {{
-            height: 96px;
-            background-size: cover;
-            background-position: center;
-        }}
-
-        .opening-card-title {{
-            color: {theme["text"]};
-            font-size: 1rem;
-            font-weight: 750;
-            padding: 0.65rem 0.75rem;
-        }}
-
-        .opening-card-meta {{
-            color: {theme["muted"]};
-            font-size: 0.82rem;
-            padding: 0 0.75rem 0.65rem 0.75rem;
-        }}
-
-        .opening-icon-card {{
-            border: 1px solid {theme["panel_border"]};
-            background: {theme["panel_bg"]};
-            border-radius: 8px;
-            overflow: hidden;
-            margin-bottom: 0.4rem;
-        }}
-
-        .opening-icon-image {{
-            height: 74px;
-            background-size: cover;
-            background-position: center;
-        }}
-
-        .opening-icon-title {{
-            color: {theme["text"]};
-            font-size: 0.9rem;
-            font-weight: 800;
-            padding: 0.5rem 0.6rem;
-        }}
-
-        .score-panel {{
-            border: 1px solid {theme["panel_border"]};
-            background: {theme["panel_bg"]};
-            border-radius: 8px;
-            padding: 1rem;
-            margin-bottom: 0.75rem;
-        }}
-
-        .score-panel-title {{
-            font-size: 1rem;
-            font-weight: 700;
-            margin-bottom: 0.75rem;
-            color: {theme["text"]};
-        }}
-
-        .score-progress {{
-            width: 100%;
-            height: 0.95rem;
-            background: {theme["progress_bg"]};
-            border-radius: 999px;
-            overflow: hidden;
-            margin-top: 0.85rem;
-        }}
-
-        .score-progress-fill {{
-            height: 100%;
-            background: {theme["progress_fill"]};
-            border-radius: 999px;
-        }}
-
-        .score-label {{
-            display: flex;
-            justify-content: space-between;
-            gap: 1rem;
-            font-size: 0.9rem;
-            color: {theme["muted"]};
-            margin: 0.3rem 0;
-        }}
-
-        div[data-testid="stExpander"] {{
-            background: {theme["panel_bg"]};
-            border: 1px solid {theme["panel_border"]};
-            border-radius: 8px;
-        }}
-
-        .layout-legend {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem 0.85rem;
-            align-items: center;
-            color: {theme["muted"]};
-            font-size: 0.9rem;
-            margin: 0.35rem 0 1rem 0;
-        }}
-
-        .legend-item {{
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-        }}
-
-        .legend-swatch {{
-            width: 0.85rem;
-            height: 0.85rem;
-            border-radius: 3px;
-            border: 1px solid {theme["text"]};
-            display: inline-block;
-        }}
-
-        [data-testid="stSidebar"] div.stButton > button {{
-            background: {theme["button_bg"]};
-            color: #ffffff;
-            border: 1px solid {theme["button_border"]};
-            border-radius: 8px;
-            font-weight: 700;
-            width: 100%;
-        }}
-
-        [data-testid="stSidebar"] div.stButton > button:hover {{
-            background: {theme["button_hover"]};
-            color: #ffffff;
-            border-color: {theme["button_hover_border"]};
-        }}
-
-        [data-testid="stSidebar"] div.stButton > button:disabled {{
-            background: {theme["button_disabled_bg"]};
-            color: {theme["button_disabled_text"]};
-            border-color: {theme["button_disabled_bg"]};
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def get_object_by_id(layout_data, object_id):
-    for obj in layout_data["objects"]:
-        if obj["id"] == object_id:
-            return obj
-    return None
-
-
-def plot_layout(layout_data, title, theme):
-    room_width = layout_data["room"]["width"]
-    room_depth = layout_data["room"]["depth"]
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    fig.patch.set_facecolor(theme["panel_bg"])
-    ax.set_facecolor(theme["room_bg"])
-    ax.set_axisbelow(True)
-
-    room_rect = Rectangle(
-        (0, 0),
-        room_width,
-        room_depth,
-        fill=False,
-        linewidth=2.2,
-        edgecolor=theme["text"],
-        zorder=3,
-    )
-    ax.add_patch(room_rect)
-
-    for obj in layout_data["objects"]:
-        color = OBJECT_COLORS.get(obj["type"], theme["fallback_object"])
-        rect = Rectangle(
-            (obj["x"], obj["y"]),
-            obj["width"],
-            obj["depth"],
-            fill=True,
-            facecolor=color,
-            edgecolor=theme["text"],
-            linewidth=1.4,
-            alpha=0.78,
-            zorder=3,
-        )
-        ax.add_patch(rect)
-
-        center_x = obj["x"] + obj["width"] / 2
-        center_y = obj["y"] + obj["depth"] / 2
-        ax.text(
-            center_x,
-            center_y,
-            obj["type"],
-            ha="center",
-            va="center",
-            fontsize=8,
-            fontweight="bold",
-            color=theme["plot_text"],
-            zorder=4,
-        )
-
-    door = layout_data["door"]
-    if door["orientation"] == "vertical":
-        ax.plot(
-            [door["x"], door["x"]],
-            [door["y"], door["y"] + door["width"]],
-            linewidth=5,
-            color=theme["door"],
-            solid_capstyle="round",
-            zorder=4,
-        )
-    else:
-        ax.plot(
-            [door["x"], door["x"] + door["width"]],
-            [door["y"], door["y"]],
-            linewidth=5,
-            color=theme["door"],
-            solid_capstyle="round",
-            zorder=4,
-        )
-
-    ax.set_xlim(0, room_width)
-    ax.set_ylim(0, room_depth)
-    ax.set_aspect("equal")
-    ax.invert_yaxis()
-    ax.set_title(title)
-    ax.set_xlabel("x (cm)")
-    ax.set_ylabel("y (cm)")
-    ax.grid(True, color=theme["grid"], linewidth=0.6, zorder=0)
-    ax.tick_params(colors=theme["subtitle"], labelsize=8)
-    ax.title.set_color(theme["text"])
-    ax.xaxis.label.set_color(theme["subtitle"])
-    ax.yaxis.label.set_color(theme["subtitle"])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-
-    return fig
-
-
-def plot_empty_room_grid(
-    room_width_cm,
-    room_depth_cm,
-    cell_size,
-    theme,
-    objects=None,
-    openings=None,
-):
-    fig_width = min(9, max(5, room_width_cm / 80))
-    fig_height = min(7, max(4, room_depth_cm / 80))
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    fig.patch.set_facecolor(theme["panel_bg"])
-    ax.set_facecolor(theme["room_bg"])
-    ax.set_axisbelow(True)
-
-    room_rect = Rectangle(
-        (0, 0),
-        room_width_cm,
-        room_depth_cm,
-        fill=False,
-        linewidth=2.2,
-        edgecolor=theme["text"],
-        zorder=3,
-    )
-    ax.add_patch(room_rect)
-
-    for opening in openings or []:
-        side = opening["side"]
-        position = opening["position"]
-        width = opening["width"]
-        if side in ("top", "bottom"):
-            y = 0 if side == "top" else room_depth_cm
-            x_values = [position, position + width]
-            y_values = [y, y]
-            text_x = position + width / 2
-            text_y = y - 18 if side == "top" else y + 18
-        else:
-            x = 0 if side == "left" else room_width_cm
-            x_values = [x, x]
-            y_values = [position, position + width]
-            text_x = x - 26 if side == "left" else x + 26
-            text_y = position + width / 2
-
-        opening_color = theme["text"] if opening["kind"] == "door" else "#4FB3D8"
-        ax.plot(
-            x_values,
-            y_values,
-            linewidth=8,
-            color=theme["room_bg"],
-            solid_capstyle="butt",
-            zorder=5,
-        )
-        ax.plot(
-            x_values,
-            y_values,
-            linewidth=4,
-            color=opening_color,
-            solid_capstyle="round",
-            zorder=6,
-        )
-        if opening.get("label"):
-            ax.text(
-                text_x,
-                text_y,
-                opening["label"],
-                ha="center",
-                va="center",
-                fontsize=7,
-                fontweight="bold",
-                color=opening_color,
-                zorder=7,
-            )
-
-    for obj in objects or []:
-        color = OBJECT_COLORS.get(obj["type"], theme["fallback_object"])
-        rect = Rectangle(
-            (obj["x"], obj["y"]),
-            obj["width"],
-            obj["depth"],
-            fill=True,
-            facecolor=color,
-            edgecolor=theme["text"],
-            linewidth=1.2,
-            alpha=0.82,
-            zorder=3,
-        )
-        ax.add_patch(rect)
-        ax.text(
-            obj["x"] + obj["width"] / 2,
-            obj["y"] + obj["depth"] / 2,
-            obj["label"],
-            ha="center",
-            va="center",
-            fontsize=7,
-            fontweight="bold",
-            color=theme["plot_text"],
-            zorder=4,
-        )
-
-    margin = 45
-    ax.set_xlim(-margin, room_width_cm + margin)
-    ax.set_ylim(-margin, room_depth_cm + margin)
-    ax.set_aspect("equal")
-    ax.invert_yaxis()
-    ax.set_title("")
-    ax.set_xlabel("x (cm)")
-    ax.set_ylabel("y (cm)")
-
-    ax.set_xticks(range(0, room_width_cm + 1, 50))
-    ax.set_yticks(range(0, room_depth_cm + 1, 50))
-    ax.set_xticks(range(0, room_width_cm + 1, cell_size), minor=True)
-    ax.set_yticks(range(0, room_depth_cm + 1, cell_size), minor=True)
-    ax.grid(which="minor", color=theme["grid"], linewidth=0.45, zorder=0)
-    ax.grid(which="major", color=theme["panel_border"], linewidth=0.9, zorder=1)
-
-    ax.tick_params(colors=theme["subtitle"], labelsize=8)
-    ax.tick_params(which="minor", length=0)
-    ax.title.set_color(theme["text"])
-    ax.xaxis.label.set_color(theme["subtitle"])
-    ax.yaxis.label.set_color(theme["subtitle"])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-
-    return fig
-
-
-def initialize_created_room_state():
-    if "created_room_type" not in st.session_state:
-        first_room_key = next(iter(ROOM_TYPES))
-        st.session_state["created_room_type"] = first_room_key
-        st.session_state["created_room_selected"] = False
-        st.session_state["created_room_width_cm"] = ROOM_TYPES[first_room_key]["width_cm"]
-        st.session_state["created_room_depth_cm"] = ROOM_TYPES[first_room_key]["depth_cm"]
-        st.session_state["created_room_width_input"] = ROOM_TYPES[first_room_key]["width_cm"] / 100
-        st.session_state["created_room_depth_input"] = ROOM_TYPES[first_room_key]["depth_cm"] / 100
-        st.session_state["created_room_objects"] = []
-        st.session_state["created_object_counter"] = 0
-        st.session_state["created_room_door"] = None
-        st.session_state["created_room_windows"] = []
-        st.session_state["created_window_counter"] = 0
-        st.session_state["created_opening_category"] = "door"
-        st.session_state["created_opening_type"] = "single"
-
-
-def select_created_room(room_key):
-    room_data = ROOM_TYPES[room_key]
-    st.session_state["created_room_type"] = room_key
-    st.session_state["created_room_width_cm"] = room_data["width_cm"]
-    st.session_state["created_room_depth_cm"] = room_data["depth_cm"]
-    st.session_state["created_room_width_input"] = room_data["width_cm"] / 100
-    st.session_state["created_room_depth_input"] = room_data["depth_cm"] / 100
-    st.session_state["created_room_objects"] = []
-    st.session_state["created_object_counter"] = 0
-    st.session_state["created_room_door"] = None
-    st.session_state["created_room_windows"] = []
-    st.session_state["created_window_counter"] = 0
-    st.session_state["created_opening_category"] = "door"
-    st.session_state["created_opening_type"] = "single"
-    st.session_state["created_room_selected"] = True
-    st.rerun()
-
-
-def get_opening_side_length(side, room_width_cm, room_depth_cm):
-    if side in ("top", "bottom"):
-        return room_width_cm
-    return room_depth_cm
-
-
-def clamp_opening(opening, room_width_cm, room_depth_cm):
-    side_length = get_opening_side_length(opening["side"], room_width_cm, room_depth_cm)
-    opening["width"] = min(max(opening["width"], CELL_SIZE), side_length)
-    opening["position"] = min(max(opening["position"], 0), max(side_length - opening["width"], 0))
-    return opening
-
-
-def clamp_created_room_openings():
-    room_width_cm = st.session_state["created_room_width_cm"]
-    room_depth_cm = st.session_state["created_room_depth_cm"]
-
-    if st.session_state.get("created_room_door"):
-        st.session_state["created_room_door"] = clamp_opening(
-            st.session_state["created_room_door"],
-            room_width_cm,
-            room_depth_cm,
-        )
-
-    st.session_state["created_room_windows"] = [
-        clamp_opening(window, room_width_cm, room_depth_cm)
-        for window in st.session_state.get("created_room_windows", [])
-    ]
-
-
-def clamp_created_room_objects():
-    room_width_cm = st.session_state["created_room_width_cm"]
-    room_depth_cm = st.session_state["created_room_depth_cm"]
-    for obj in st.session_state.get("created_room_objects", []):
-        obj["x"] = min(max(int(obj.get("x", 0)), 0), max(room_width_cm - obj["width"], 0))
-        obj["y"] = min(max(int(obj.get("y", 0)), 0), max(room_depth_cm - obj["depth"], 0))
-
-
-def update_created_room_object_dimensions(object_id, width_m, depth_m):
-    width_cm = max(CELL_SIZE, int(round(width_m * 100 / CELL_SIZE) * CELL_SIZE))
-    depth_cm = max(CELL_SIZE, int(round(depth_m * 100 / CELL_SIZE) * CELL_SIZE))
-
-    for obj in st.session_state.get("created_room_objects", []):
-        if obj["id"] != object_id:
-            continue
-
-        orientation = obj.get("orientation", 0)
-        obj["width"] = width_cm
-        obj["depth"] = depth_cm
-        if orientation in (90, 270):
-            obj["base_width"] = depth_cm
-            obj["base_depth"] = width_cm
-        else:
-            obj["base_width"] = width_cm
-            obj["base_depth"] = depth_cm
-        break
-
-    clamp_created_room_objects()
-    st.rerun()
-
-
-def update_created_room_object_dimensions_from_inputs(object_id, width_key, depth_key):
-    update_created_room_object_dimensions(
-        object_id,
-        st.session_state[width_key],
-        st.session_state[depth_key],
-    )
-
-
-def build_created_room_openings():
-    openings = []
-    door = st.session_state.get("created_room_door")
-    if door:
-        openings.append(door)
-    openings.extend(st.session_state.get("created_room_windows", []))
-    return openings
-
-
-def opening_to_layout_door(opening):
-    if not opening:
-        return None
-
-    if opening["side"] in ("left", "right"):
-        return {
-            "x": 0 if opening["side"] == "left" else st.session_state["created_room_width_cm"],
-            "y": opening["position"],
-            "width": opening["width"],
-            "orientation": "vertical",
-        }
-
-    return {
-        "x": opening["position"],
-        "y": 0 if opening["side"] == "top" else st.session_state["created_room_depth_cm"],
-        "width": opening["width"],
-        "orientation": "horizontal",
-    }
-
-
-def get_default_created_room_entry():
-    room_width = st.session_state["created_room_width_cm"]
-    room_depth = st.session_state["created_room_depth_cm"]
-    entry_width = min(90, max(CELL_SIZE, room_width))
-    entry_x = min(50, max(room_width - entry_width, 0))
-    return {
-        "x": entry_x,
-        "y": room_depth,
-        "width": entry_width,
-        "orientation": "horizontal",
-    }
-
-
-def get_default_created_room_entry_opening():
-    room_width = st.session_state["created_room_width_cm"]
-    entry_width = min(90, max(CELL_SIZE, room_width))
-    return {
-        "id": "created_default_entry",
-        "kind": "door",
-        "type": "entry",
-        "label": "",
-        "side": "bottom",
-        "position": min(50, max(room_width - entry_width, 0)),
-        "width": entry_width,
-    }
-
-
-def build_created_room_layout():
-    return {
-        "room": {
-            "width": st.session_state["created_room_width_cm"],
-            "depth": st.session_state["created_room_depth_cm"],
-        },
-        "door": get_default_created_room_entry(),
-        "objects": copy.deepcopy(st.session_state.get("created_room_objects", [])),
-    }
-
-
-def build_created_room_score_layout():
-    layout_data = build_created_room_layout()
-
-    selected_room_key = st.session_state["created_room_type"]
-    required_ids = {}
-    if selected_room_key == "kitchen":
-        required_ids = {
-            "fridge": "fridge_1",
-            "sink": "sink_1",
-            "stove": "stove_1",
-        }
-    optional_ids = {
-        "table": "table_1",
-    }
-    score_ids = {**required_ids, **optional_ids}
-    used_required_types = set()
-    for obj in layout_data["objects"]:
-        object_type = obj.get("type")
-        if object_type in score_ids and object_type not in used_required_types:
-            obj["id"] = score_ids[object_type]
-            used_required_types.add(object_type)
-
-    return layout_data, sorted(set(required_ids) - used_required_types)
-
-
-def render_opening_layout(room_width_cm, room_depth_cm, openings, theme):
-    return OPENING_LAYOUT(
-        room={"width": room_width_cm, "depth": room_depth_cm},
-        openings=openings,
-        theme=theme,
-        default=None,
-        key="created_room_opening_layout",
-    )
-
-
-def update_created_room_opening(opening_id, side, position):
-    door = st.session_state.get("created_room_door")
-    if door and door["id"] == opening_id:
-        door["side"] = side
-        door["position"] = position
-        clamp_created_room_openings()
-        return True
-
-    for window in st.session_state.get("created_room_windows", []):
-        if window["id"] == opening_id:
-            window["side"] = side
-            window["position"] = position
-            clamp_created_room_openings()
-            return True
-
-    return False
-
-
-def select_opening_category(category):
-    st.session_state["created_opening_category"] = category
-    st.session_state["created_opening_type"] = OPENING_TYPES[category][0]["type"]
-    st.rerun()
-
-
-def select_opening_type(opening_type):
-    st.session_state["created_opening_type"] = opening_type
-    st.rerun()
-
-
-def get_selected_opening_type():
-    category = st.session_state.get("created_opening_category", "door")
-    selected_type = st.session_state.get("created_opening_type", OPENING_TYPES[category][0]["type"])
-    for item in OPENING_TYPES[category]:
-        if item["type"] == selected_type:
-            return item
-    return OPENING_TYPES[category][0]
-
-
-def add_created_room_object(item):
-    objects = st.session_state.setdefault("created_room_objects", [])
-    room_width = st.session_state["created_room_width_cm"]
-    room_depth = st.session_state["created_room_depth_cm"]
-    st.session_state["created_object_counter"] = st.session_state.get("created_object_counter", 0) + 1
-    index = st.session_state["created_object_counter"]
-    max_x = max(room_width - item["width"], 0)
-    max_y = max(room_depth - item["depth"], 0)
-    x = min(((index - 1) % 5) * 40, max_x)
-    y = min(((index - 1) // 5) * 40, max_y)
-    objects.append(
-        {
-            "id": f"created_{item['type']}_{index}",
-            "type": item["type"],
-            "label": item["label"],
-            "x": x,
-            "y": y,
-            "width": item["width"],
-            "depth": item["depth"],
-            "orientation": 0,
-            "access_side": "all" if item["type"] == "table" else "front",
-        }
-    )
-    st.rerun()
-
-
-def remove_created_room_object(object_id):
-    st.session_state["created_room_objects"] = [
-        obj for obj in st.session_state.get("created_room_objects", [])
-        if obj["id"] != object_id
-    ]
-    st.rerun()
-
-
-def update_object_position(layout_data, object_id, new_x, new_y):
-    obj = get_object_by_id(layout_data, object_id)
-    if obj is not None:
-        obj["x"] = new_x
-        obj["y"] = new_y
-
-
-def ensure_base_dimensions(obj):
-    obj.setdefault("orientation", 0)
-    if "base_width" not in obj or "base_depth" not in obj:
-        if obj["orientation"] in (90, 270):
-            obj["base_width"] = obj["depth"]
-            obj["base_depth"] = obj["width"]
-        else:
-            obj["base_width"] = obj["width"]
-            obj["base_depth"] = obj["depth"]
-
-
-def get_base_dimensions(obj):
-    ensure_base_dimensions(obj)
-    return obj["base_width"], obj["base_depth"]
-
-
-def initialize_object_dimensions(layout_data):
-    for obj in layout_data["objects"]:
-        ensure_base_dimensions(obj)
-
-
-def rotate_object(obj, orientation):
-    base_width, base_depth = get_base_dimensions(obj)
-    obj["orientation"] = orientation
-
-    if orientation in (90, 270):
-        obj["width"] = base_depth
-        obj["depth"] = base_width
-    else:
-        obj["width"] = base_width
-        obj["depth"] = base_depth
-
-
-def clamp_session_position(object_id, obj, room_width, room_depth):
-    max_x = room_width - obj["width"]
-    max_y = room_depth - obj["depth"]
-
-    x_key = f"{object_id}_x"
-    y_key = f"{object_id}_y"
-
-    if x_key in st.session_state:
-        st.session_state[x_key] = min(st.session_state[x_key], max_x)
-    if y_key in st.session_state:
-        st.session_state[y_key] = min(st.session_state[y_key], max_y)
-
-
-def render_draggable_layout(layout_data, editable_ids, theme, key="candidate_drag_layout"):
-    return DRAGGABLE_LAYOUT(
-        layout_data=layout_data,
-        editable_ids=editable_ids,
-        object_colors=OBJECT_COLORS,
-        theme=theme,
-        default=None,
-        key=key,
-    )
-
-
-def apply_drag_event_to_layout(layout_data, editable_ids, drag_event):
-    updated_layout = copy.deepcopy(layout_data)
-    initialize_object_dimensions(updated_layout)
-
-    for object_id, orientation in drag_event.get("orientations", {}).items():
-        if object_id not in editable_ids:
-            continue
-        obj = get_object_by_id(updated_layout, object_id)
-        if obj is None:
-            continue
-        rotate_object(obj, int(orientation))
-        obj["x"] = min(obj["x"], max(updated_layout["room"]["width"] - obj["width"], 0))
-        obj["y"] = min(obj["y"], max(updated_layout["room"]["depth"] - obj["depth"], 0))
-
-    for object_id, position in drag_event.get("positions", {}).items():
-        if object_id not in editable_ids:
-            continue
-        obj = get_object_by_id(updated_layout, object_id)
-        if obj is None:
-            continue
-
-        max_x = max(updated_layout["room"]["width"] - obj["width"], 0)
-        max_y = max(updated_layout["room"]["depth"] - obj["depth"], 0)
-        obj["x"] = min(max(int(position["x"]), 0), max_x)
-        obj["y"] = min(max(int(position["y"]), 0), max_y)
-
-    return updated_layout
-
-
-
-
-def format_cm(value):
-    if value is None:
-        return "not reachable"
-    return f"{value:.0f} cm"
-
-
-def describe_workflow_path(path):
-    distance = path["length_cm"]
-    ideal_min = path["ideal_min_cm"]
-    ideal_max = path["ideal_max_cm"]
-
-    if distance is None:
-        return "blocked path"
-    if ideal_min is not None and distance < ideal_min:
-        return "too close"
-    if ideal_max is not None and distance > ideal_max:
-        return "too far"
-    return "ideal"
-
-
-def build_workflow_rows(result):
-    workflow_paths = result.get("workflow_paths", [])
-    if not workflow_paths:
-        return [
-            {
-                "Path": "-",
-                "Distance": "-",
-                "Ideal range": "-",
-                "Score": "-",
-                "Effect": "workflow details unavailable",
-            }
-        ]
-
-    rows = []
-    for path in workflow_paths:
-        rows.append(
-            {
-                "Path": f"{path['from']} -> {path['to']}",
-                "Distance": format_cm(path["length_cm"]),
-                "Ideal range": (
-                    f"{path['ideal_min_cm']:.0f}-{path['ideal_max_cm']:.0f} cm"
-                    if path["ideal_min_cm"] is not None
-                    else "-"
-                ),
-                "Score": f"{path['score']:.4f}",
-                "Effect": describe_workflow_path(path),
-            }
-        )
-    return rows
-
-
-def build_work_triangle_rows(result):
-    triangle = result.get("work_triangle")
-    if not triangle:
-        return [
-            {
-                "Element": "-",
-                "Distance": "-",
-                "Ideal range": "-",
-                "Score": "-",
-                "Effect": "work triangle details unavailable",
-            }
-        ]
-
-    rows = []
-    for leg in triangle["legs"]:
-        rows.append(
-            {
-                "Element": f"{leg['from']} -> {leg['to']}",
-                "Distance": format_cm(leg["length_cm"]),
-                "Ideal range": f"{leg['ideal_min_cm']:.0f}-{leg['ideal_max_cm']:.0f} cm",
-                "Score": f"{leg['score']:.4f}",
-                "Effect": describe_workflow_path(leg),
-            }
-        )
-
-    rows.append(
-        {
-            "Element": "triangle total",
-            "Distance": format_cm(triangle["total_cm"]),
-            "Ideal range": (
-                f"{triangle['total_ideal_min_cm']:.0f}-"
-                f"{triangle['total_ideal_max_cm']:.0f} cm"
-            ),
-            "Score": f"{triangle['total_score']:.4f}",
-            "Effect": describe_workflow_path(
-                {
-                    "length_cm": triangle["total_cm"],
-                    "ideal_min_cm": triangle["total_ideal_min_cm"],
-                    "ideal_max_cm": triangle["total_ideal_max_cm"],
-                }
-            ),
-        }
-    )
-
-    rows.append(
-        {
-            "Element": "triangle score",
-            "Distance": "-",
-            "Ideal range": "120-270 cm per leg, 400-790 cm total",
-            "Score": f"{triangle['triangle_score']:.4f}",
-            "Effect": "included in workflow score",
-        }
-    )
-
-    return rows
-
-
-def build_space_rows(result):
-    required_keys = [
-        "clearance_stats",
-        "walkability_stats",
-        "usable_fragmentation_stats",
-        "space_components",
-    ]
-    if any(key not in result for key in required_keys):
-        return [
-            {
-                "Component": "-",
-                "Score": "-",
-                "Detail": "space details unavailable",
-            }
-        ]
-
-    clearance_stats = result["clearance_stats"]
-    walkability_stats = result["walkability_stats"]
-    fragmentation_stats = result["usable_fragmentation_stats"]
-    components = result["space_components"]
-
-    return [
-        {
-            "Component": "Average clearance",
-            "Score": f"{components['clearance_score']:.4f}",
-            "Detail": f"{clearance_stats['avg_clearance_cm']:.0f} cm average free clearance",
-        },
-        {
-            "Component": "Critical area",
-            "Score": f"{components['critical_area_score']:.4f}",
-            "Detail": f"{clearance_stats['critical_area_pct']:.1f}% of free cells under 60 cm",
-        },
-        {
-            "Component": "Walkability",
-            "Score": f"{components['walkability_score']:.4f}",
-            "Detail": (
-                f"{walkability_stats['good_pct']:.1f}% good, "
-                f"{walkability_stats['medium_pct']:.1f}% medium, "
-                f"{walkability_stats['poor_pct']:.1f}% poor"
-            ),
-        },
-        {
-            "Component": "Usable area",
-            "Score": f"{components['usable_area_score']:.4f}",
-            "Detail": (
-                f"{fragmentation_stats['total_usable_cells']} usable cells, "
-                f"{fragmentation_stats['num_components']} connected areas"
-            ),
-        },
-    ]
-
-
-def build_suggestion_rows(result):
-    suggestions = []
-
-    triangle = result.get("work_triangle")
-    if triangle:
-        for leg in triangle["legs"]:
-            effect = describe_workflow_path(leg)
-            if leg["score"] < 0.75:
-                if effect == "too far":
-                    suggestion = "Move these work centers closer or remove detours between them."
-                elif effect == "too close":
-                    suggestion = "Increase the working distance between these two centers."
-                elif effect == "blocked path":
-                    suggestion = "Clear the path so the triangle leg is reachable."
-                else:
-                    suggestion = "Review this side of the work triangle."
-
-                suggestions.append(
-                    {
-                        "Area": "Work triangle",
-                        "Issue": f"{leg['from']} -> {leg['to']} is {effect}",
-                        "Score": f"{leg['score']:.4f}",
-                        "Suggestion": suggestion,
-                    }
-                )
-
-        total_effect = describe_workflow_path(
-            {
-                "length_cm": triangle["total_cm"],
-                "ideal_min_cm": triangle["total_ideal_min_cm"],
-                "ideal_max_cm": triangle["total_ideal_max_cm"],
-            }
-        )
-        if triangle["total_score"] < 0.75:
-            suggestions.append(
-                {
-                    "Area": "Work triangle",
-                    "Issue": f"Triangle total is {total_effect}",
-                    "Score": f"{triangle['total_score']:.4f}",
-                    "Suggestion": "Keep the fridge, sink, and stove triangle within the recommended total travel distance.",
-                }
-            )
-
-    workflow_paths = result.get("workflow_paths", [])
-    for path in workflow_paths:
-        effect = describe_workflow_path(path)
-        if path["score"] < 0.75:
-            if effect == "too far":
-                suggestion = "Move these two elements closer or reduce obstacles between them."
-            elif effect == "too close":
-                suggestion = "Add more working distance between these two elements."
-            elif effect == "blocked path":
-                suggestion = "Move blocking objects to restore a reachable walking path."
-            else:
-                suggestion = "Review this workflow segment."
-
-            suggestions.append(
-                {
-                    "Area": "Workflow",
-                    "Issue": f"{path['from']} -> {path['to']} is {effect}",
-                    "Score": f"{path['score']:.4f}",
-                    "Suggestion": suggestion,
-                }
-            )
-
-    required_keys = [
-        "space_components",
-        "clearance_stats",
-        "walkability_stats",
-        "usable_fragmentation_stats",
-    ]
-    if any(key not in result for key in required_keys):
-        suggestions.append(
-            {
-                "Area": "Details",
-                "Issue": "Score details are unavailable",
-                "Score": "-",
-                "Suggestion": (
-                    "Restart Streamlit or redeploy with the updated logic.py so "
-                    "the app can explain score components."
-                ),
-            }
-        )
-        return suggestions
-
-    components = result["space_components"]
-    clearance_stats = result["clearance_stats"]
-    walkability_stats = result["walkability_stats"]
-    fragmentation_stats = result["usable_fragmentation_stats"]
-
-    if components["clearance_score"] < 0.65:
-        suggestions.append(
-            {
-                "Area": "Space",
-                "Issue": "Average clearance is low",
-                "Score": f"{components['clearance_score']:.4f}",
-                "Suggestion": (
-                    f"Increase free passage width; current average is "
-                    f"{clearance_stats['avg_clearance_cm']:.0f} cm."
-                ),
-            }
-        )
-
-    if components["critical_area_score"] < 0.75:
-        suggestions.append(
-            {
-                "Area": "Space",
-                "Issue": "Too much critical area",
-                "Score": f"{components['critical_area_score']:.4f}",
-                "Suggestion": (
-                    f"Reduce zones below 60 cm clearance; currently "
-                    f"{clearance_stats['critical_area_pct']:.1f}% of free cells."
-                ),
-            }
-        )
-
-    if components["walkability_score"] < 0.65:
-        suggestions.append(
-            {
-                "Area": "Space",
-                "Issue": "Walkability is weak",
-                "Score": f"{components['walkability_score']:.4f}",
-                "Suggestion": (
-                    f"Open wider walking corridors; poor cells are "
-                    f"{walkability_stats['poor_pct']:.1f}%."
-                ),
-            }
-        )
-
-    if components["usable_area_score"] < 0.65:
-        suggestions.append(
-            {
-                "Area": "Space",
-                "Issue": "Usable area is limited",
-                "Score": f"{components['usable_area_score']:.4f}",
-                "Suggestion": (
-                    f"Try reducing fragmentation; usable space is split into "
-                    f"{fragmentation_stats['num_components']} connected areas."
-                ),
-            }
-        )
-
-    if not suggestions:
-        suggestions.append(
-            {
-                "Area": "Overall",
-                "Issue": "No major weak component detected",
-                "Score": "-",
-                "Suggestion": "The current candidate has no component below the warning thresholds.",
-            }
-        )
-
-    return suggestions
-
-
-def render_score_panel(title, result, show_workflow=True):
-    st.markdown(
-        f"""
-        <div class="score-panel">
-            <div class="score-panel-title">{title}</div>
-            <div class="score-label">
-                <span>Space score</span>
-                <strong>{result['space_score']:.4f}</strong>
-            </div>
-            <div class="score-progress">
-                <div class="score-progress-fill" style="width:{result['space_score'] * 100:.1f}%"></div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if show_workflow and "workflow_score" in result:
-        st.markdown(
-            f"""
-            <div class="score-panel">
-                <div class="score-label">
-                    <span>Workflow score</span>
-                    <strong>{result['workflow_score']:.4f}</strong>
-                </div>
-                <div class="score-progress">
-                    <div class="score-progress-fill" style="width:{result['workflow_score'] * 100:.1f}%"></div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def render_layout_legend():
-    items = []
-    for object_type, color in OBJECT_COLORS.items():
-        items.append(
-            f'<span class="legend-item">'
-            f'<span class="legend-swatch" style="background:{color};"></span>'
-            f"{object_type}</span>"
-        )
-
-    st.markdown(
-        f"<div class='layout-legend'>{''.join(items)}</div>",
-        unsafe_allow_html=True,
-    )
-
-
-def set_app_view(view):
-    st.session_state["app_view"] = view
-    st.rerun()
-
-
-def build_landing_background():
-    slides = "".join(
-        (
-            '<div class="landing-bg-slide" '
-            f'style="background-image:url({image_url}); animation-delay:{index * 5}s;">'
-            "</div>"
-        )
-        for index, image_url in enumerate(INTERIOR_IMAGES)
-    )
-
-    return f'<div class="landing-background">{slides}</div>'
-
-
-def render_landing_page():
-    background_markup = build_landing_background()
-
-    st.markdown(
-        f"""
-        {background_markup}
-        <div class="landing-shell">
-            <div class="landing-panel">
-                <div class="landing-kicker">MVP decision support for interior layouts</div>
-                <div class="landing-title">
-                    <span class="landing-brand-dark">HU</span><span class="landing-brand-green">Bspace</span>
-                </div>
-                <p class="landing-subtitle">
-                    Explore, evaluate, and compare room configurations with
-                    measurable support for layout decisions.
-                </p>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="landing-actions">', unsafe_allow_html=True)
-    action_col_1, action_col_2, action_col_3 = st.columns(3)
-
-    with action_col_1:
-        if st.button("create new room", use_container_width=True):
-            set_app_view("create_room")
-
-    with action_col_2:
-        if st.button("upload room", use_container_width=True):
-            set_app_view("upload_room")
-
-    with action_col_3:
-        if st.button("compare room", use_container_width=True):
-            set_app_view("compare_room")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_placeholder_page(title, description):
-    if st.button("Back to home"):
-        set_app_view("landing")
-
-    st.markdown(
-        f"""
-        <div class="app-header">
-            <div class="app-title">{title}</div>
-            <p class="app-subtitle">{description}</p>
-        </div>
-        <div class="placeholder-panel">
-            This section is ready for the next implementation step.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_create_room_page(theme):
-    initialize_created_room_state()
-
-    if st.button("Back to home"):
-        set_app_view("landing")
-
-    st.markdown(
-        """
-        <div class="app-header">
-            <div class="app-title">Create new room</div>
-            <p class="app-subtitle">
-                Select a room type, then define the room dimensions and build a
-                10 cm decision grid for the MVP.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if not st.session_state.get("created_room_selected", False):
-        st.subheader("Choose room type")
-        room_cards = st.columns(3)
-        for index, (room_key, room_data) in enumerate(ROOM_TYPES.items()):
-            with room_cards[index % 3]:
-                st.markdown(
-                    f"""
-                    <div class="room-type-card">
-                        <div class="room-type-image" style="background-image:url({room_data['image']});"></div>
-                        <div class="room-type-body">
-                            <div class="room-type-title">{room_data['label']}</div>
-                            <div class="room-type-description">{room_data['description']}</div>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                if st.button("Select", key=f"select_room_{room_key}", use_container_width=True):
-                    select_created_room(room_key)
-        return
-
-    selected_room_key = st.session_state["created_room_type"]
-    selected_room = ROOM_TYPES[selected_room_key]
-
-    menu_col, workspace_col = st.columns([1, 2])
-
-    with menu_col:
-        if st.button("Change room type", use_container_width=True):
-            st.session_state["created_room_selected"] = False
-            st.rerun()
-
-        st.subheader("Room dimensions")
-        st.markdown(
-            f'<p class="selected-room-label">Selected room: {selected_room["label"]}</p>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<p class="room-form-note">Use 0.10 m increments: every value maps to 10 cm cells.</p>',
-            unsafe_allow_html=True,
-        )
-
-        width_m = st.number_input(
-            "Room width (m)",
-            min_value=1.0,
-            max_value=20.0,
-            value=float(st.session_state["created_room_width_cm"] / 100),
-            step=0.1,
-            format="%.2f",
-            key="created_room_width_input",
-        )
-        depth_m = st.number_input(
-            "Room depth (m)",
-            min_value=1.0,
-            max_value=20.0,
-            value=float(st.session_state["created_room_depth_cm"] / 100),
-            step=0.1,
-            format="%.2f",
-            key="created_room_depth_input",
-        )
-
-        if st.button("Update dimensions", use_container_width=True):
-            st.session_state["created_room_width_cm"] = int(round(width_m * 100 / CELL_SIZE) * CELL_SIZE)
-            st.session_state["created_room_depth_cm"] = int(round(depth_m * 100 / CELL_SIZE) * CELL_SIZE)
-            clamp_created_room_openings()
-            clamp_created_room_objects()
-            st.rerun()
-
-        room_width_cm = st.session_state["created_room_width_cm"]
-        room_depth_cm = st.session_state["created_room_depth_cm"]
-
-        st.subheader("Elements")
-        st.caption("Add items, then move them in the editor. Double click an item to rotate it.")
-        furniture_items = FURNITURE_CATALOG.get(selected_room_key, [])
-        item_cols = st.columns(2)
-        for index, item in enumerate(furniture_items):
-            with item_cols[index % 2]:
-                if st.button(
-                    f"+ {item['label']}",
-                    key=f"add_created_object_{selected_room_key}_{item['type']}_{index}",
-                    use_container_width=True,
-                ):
-                    add_created_room_object(item)
-
-        objects = st.session_state.get("created_room_objects", [])
-        if objects:
-            st.markdown('<div class="furniture-list">', unsafe_allow_html=True)
-            for obj in objects:
-                item_col_1, item_col_2, item_col_3, item_col_4 = st.columns([1.15, 0.72, 0.72, 0.8])
-                width_key = f"inline_width_{obj['id']}_{obj.get('orientation', 0)}"
-                depth_key = f"inline_depth_{obj['id']}_{obj.get('orientation', 0)}"
-                with item_col_1:
-                    st.markdown(
-                        f"""
-                        <div class="furniture-item">
-                            <span>{obj['label']}</span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                with item_col_2:
-                    st.number_input(
-                        "W",
-                        min_value=0.1,
-                        max_value=max(0.1, room_width_cm / 100),
-                        value=float(obj["width"] / 100),
-                        step=0.1,
-                        format="%.2f",
-                        key=width_key,
-                        label_visibility="collapsed",
-                        on_change=update_created_room_object_dimensions_from_inputs,
-                        args=(obj["id"], width_key, depth_key),
-                    )
-                with item_col_3:
-                    st.number_input(
-                        "D",
-                        min_value=0.1,
-                        max_value=max(0.1, room_depth_cm / 100),
-                        value=float(obj["depth"] / 100),
-                        step=0.1,
-                        format="%.2f",
-                        key=depth_key,
-                        label_visibility="collapsed",
-                        on_change=update_created_room_object_dimensions_from_inputs,
-                        args=(obj["id"], width_key, depth_key),
-                    )
-                with item_col_4:
-                    if st.button("Remove", key=f"remove_created_object_{obj['id']}", use_container_width=True):
-                        remove_created_room_object(obj["id"])
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    room_width_cm = st.session_state["created_room_width_cm"]
-    room_depth_cm = st.session_state["created_room_depth_cm"]
-    objects = st.session_state.get("created_room_objects", [])
-    openings = [get_default_created_room_entry_opening()]
-
-    with workspace_col:
-        if objects:
-            created_layout = build_created_room_layout()
-            initialize_object_dimensions(created_layout)
-            editable_ids = [obj["id"] for obj in created_layout["objects"]]
-            drag_event = render_draggable_layout(
-                created_layout,
-                editable_ids,
-                theme,
-                key="created_room_drag_layout",
-            )
-            if drag_event:
-                event_id = drag_event.get("event_id")
-                if event_id != st.session_state.get("last_created_drag_event_id"):
-                    updated_layout = apply_drag_event_to_layout(created_layout, editable_ids, drag_event)
-                    st.session_state["created_room_objects"] = copy.deepcopy(updated_layout["objects"])
-                    st.session_state["last_created_drag_event_id"] = event_id
-                    st.rerun()
-        else:
-            fig = plot_empty_room_grid(room_width_cm, room_depth_cm, CELL_SIZE, theme, objects, openings)
-            st.pyplot(fig)
-
-        if objects:
-            st.subheader("Layout scores")
-            if not layout_is_valid(objects):
-                st.error("Invalid layout: some objects overlap. Move or resize them before reading the scores.")
-            else:
-                score_layout, missing_types = build_created_room_score_layout()
-                if missing_types:
-                    missing_labels = ", ".join(missing_types)
-                    st.info(
-                        "Add fridge, sink, and stove to unlock workflow scoring. "
-                        f"Missing: {missing_labels}."
-                    )
-                else:
-                    try:
-                        is_kitchen = selected_room_key == "kitchen"
-                        if is_kitchen:
-                            result_created = analyze_layout(score_layout)
-                        elif analyze_space_layout is not None:
-                            result_created = analyze_space_layout(score_layout)
-                        else:
-                            result_created = None
-                    except Exception as exc:
-                        st.warning(f"Scores are not available for this layout yet: {exc}")
-                    else:
-                        if result_created is None:
-                            st.info("Space scoring is not available until logic.py is updated in the running app.")
-                        else:
-                            render_score_panel("Created layout", result_created, show_workflow=is_kitchen)
-                            with st.expander("Suggestions", expanded=True):
-                                st.table(build_suggestion_rows(result_created))
-                            if is_kitchen:
-                                detail_col_1, detail_col_2 = st.columns(2)
-                                with detail_col_1:
-                                    with st.expander("Workflow details", expanded=False):
-                                        st.table(build_workflow_rows(result_created))
-                                    with st.expander("Work triangle details", expanded=False):
-                                        st.table(build_work_triangle_rows(result_created))
-                                with detail_col_2:
-                                    with st.expander("Space details", expanded=False):
-                                        st.table(build_space_rows(result_created))
-                            else:
-                                with st.expander("Space details", expanded=False):
-                                    st.table(build_space_rows(result_created))
-
-
-theme = resolve_theme()
-apply_custom_style(theme)
-
-if "app_view" not in st.session_state:
-    st.session_state["app_view"] = "landing"
-
-if st.session_state["app_view"] == "landing":
-    render_landing_page()
-    st.stop()
-
-if st.session_state["app_view"] == "create_room":
-    render_create_room_page(theme)
-    st.stop()
-
-if st.session_state["app_view"] == "upload_room":
-    render_placeholder_page(
-        "Upload room",
-        "Import an existing room layout and prepare it for analysis.",
-    )
-    st.stop()
 
 st.markdown(
     """
-    <div class="app-header">
-        <div class="app-title">Kitchen Layout Decision Support</div>
-        <p class="app-subtitle">
-            Compare baseline and candidate layouts, move components, rotate them,
-            and inspect why each score changes.
-        </p>
-    </div>
-    """,
+<style>
+[data-testid="stAppViewContainer"] { background: #f8fafc; }
+[data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid #e5e7eb; }
+.block-container { padding-top: 1.1rem; max-width: 1580px; }
+.card {
+    background: white; border: 1px solid #e5e7eb; border-radius: 18px;
+    padding: 18px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.045);
+    margin-bottom: 16px;
+}
+.small-card {
+    background: white; border: 1px solid #e5e7eb; border-radius: 16px;
+    padding: 14px 16px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.035);
+    min-height: 170px;
+}
+.section-title { font-size: 1.15rem; font-weight: 800; margin-bottom: 4px; color:#111827; }
+.subtle { color: #64748b; font-size: 0.92rem; }
+.nav-item { padding: 10px 12px; border-radius: 10px; margin-bottom: 8px; color: #475569; font-weight: 500; }
+.nav-active { background: #eaf2ff; color: #1266d6; font-weight: 700; }
+.progress-bg { height: 8px; background: #eef2f7; border-radius: 999px; overflow: hidden; margin-top: 12px; margin-bottom: 10px; }
+.progress-fill-green { height: 8px; background: #2e9d55; border-radius: 999px; }
+.progress-fill-amber { height: 8px; background: #f5b642; border-radius: 999px; }
+.progress-fill-orange { height: 8px; background: #f97316; border-radius: 999px; }
+.metric-name { font-weight: 800; color: #111827; font-size: 0.9rem; }
+.metric-score { font-size: 2rem; font-weight: 850; color: #2e9d55; line-height: 1.1; }
+.metric-score-amber { color: #f5b642; }
+.metric-score-orange { color: #f97316; }
+.mini-row { display: flex; justify-content: space-between; font-size: 0.78rem; color: #475569; padding: 4px 0; }
+.sidebar-title { font-size: 1.45rem; font-weight: 850; color: #111827; margin-bottom: 0px; }
+.sidebar-subtitle { color: #64748b; font-size: 0.9rem; margin-bottom: 28px; }
+.badge {
+    display: inline-block; padding: 4px 9px; border-radius: 999px;
+    background: #eef2ff; color: #3444a3; font-size: 0.78rem; margin-right: 6px; margin-bottom: 5px;
+}
+</style>
+""",
     unsafe_allow_html=True,
 )
 
-if "baseline_layout" not in st.session_state:
-    st.session_state["baseline_layout"] = copy.deepcopy(layout_base)
-if "candidate_layout" not in st.session_state:
-    st.session_state["candidate_layout"] = copy.deepcopy(st.session_state["baseline_layout"])
 
-baseline_layout = copy.deepcopy(st.session_state["baseline_layout"])
-initialize_object_dimensions(baseline_layout)
-candidate_layout = copy.deepcopy(st.session_state["candidate_layout"])
-initialize_object_dimensions(candidate_layout)
+def demo_layout():
+    return pd.DataFrame(
+        [
+            ["Door", "door", "entry", 395, 400, 80, WALL_CM],
+            ["Window Top", "window", "living", 520, -15, 260, 15],
+            ["Window Left", "window", "living", -15, 145, 15, 155],
+            ["TV Unit", "tv", "living", 40, 25, 320, 38],
+            ["Sofa 1", "sofa", "living", 55, 160, 70, 175],
+            ["Sofa 2", "sofa", "living", 120, 315, 230, 60],
+            ["Plant Large", "plant", "living", 455, 300, 40, 40],
+            ["Plant Small", "plant", "living", 365, 95, 35, 35],
+            ["Fridge", "fridge", "kitchen", 810, 55, 60, 95],
+            ["Tall Storage", "storage", "kitchen", 810, 150, 60, 175],
+            ["Kitchen Counter", "counter", "kitchen", 500, 325, 300, 45],
+            ["Sink", "sink", "kitchen", 820, 260, 42, 48],
+            ["Cooktop", "stove", "kitchen", 665, 336, 70, 28],
+            ["Dining Set", "dining_set", "dining", 620, 210, 145, 185],
+        ],
+        columns=["name", "type", "zone", "x", "y", "w", "h"],
+    )
 
-room_width = candidate_layout["room"]["width"]
-room_depth = candidate_layout["room"]["depth"]
 
-editable_object_ids = ["fridge_1", "sink_1", "stove_1", "oven_1", "table_1"]
+def clean_layout(df):
+    required = ["name", "type", "zone", "x", "y", "w", "h"]
+    for col in required:
+        if col not in df.columns:
+            df[col] = "" if col in ["name", "type", "zone"] else 0
 
-drag_event = render_draggable_layout(candidate_layout, editable_object_ids, theme)
-if drag_event:
-    event_id = drag_event.get("event_id")
-    if event_id != st.session_state.get("last_drag_event_id"):
-        updated_candidate_layout = apply_drag_event_to_layout(
-            st.session_state["candidate_layout"],
-            editable_object_ids,
-            drag_event,
+    df = df[required].copy()
+    df["name"] = df["name"].astype(str)
+    df["type"] = df["type"].astype(str).str.lower().str.strip()
+    df["zone"] = df["zone"].astype(str).str.lower().str.strip()
+    for c in ["x", "y", "w", "h"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+
+    df["w"] = df["w"].clip(10, ROOM_W_CM)
+    df["h"] = df["h"].clip(10, ROOM_H_CM)
+
+    wall_items = df["type"].isin(["door", "window"])
+    horizontal_wall_items = wall_items & (df["w"] >= df["h"])
+    vertical_wall_items = wall_items & (df["h"] > df["w"])
+    df.loc[horizontal_wall_items, "h"] = df.loc[horizontal_wall_items, "h"].clip(10, WALL_CM)
+    df.loc[vertical_wall_items, "w"] = df.loc[vertical_wall_items, "w"].clip(10, WALL_CM)
+
+    def clamp_position(r, axis):
+        room_size = ROOM_W_CM if axis == "x" else ROOM_H_CM
+        size = int(r["w"] if axis == "x" else r["h"])
+        value = int(r[axis])
+        if r["type"] in {"door", "window"}:
+            return min(max(value, -WALL_CM), room_size)
+        return min(max(value, 0), max(0, room_size - size))
+
+    df["x"] = df.apply(lambda r: clamp_position(r, "x"), axis=1)
+    df["y"] = df.apply(lambda r: clamp_position(r, "y"), axis=1)
+    return df
+
+
+def load_sample_layout():
+    try:
+        return clean_layout(pd.read_csv("sample_layout.csv"))
+    except Exception:
+        return demo_layout()
+
+
+def render_grid_editor(df):
+    items = clean_layout(df).to_dict(orient="records")
+    return grid_component(
+        items=items,
+        colors=TYPE_COLORS,
+        roomWidth=ROOM_W_CM,
+        roomHeight=ROOM_H_CM,
+        default=items,
+        key=f"grid_editor_v2_{len(items)}",
+    )
+
+
+def to_grid(df):
+    occ = np.zeros((GRID_H, GRID_W), dtype=int)
+    for _, r in clean_layout(df).iterrows():
+        if r.type in {"door", "window"}:
+            continue
+        x1 = max(0, int(np.floor(r.x / CELL_CM)))
+        y1 = max(0, int(np.floor(r.y / CELL_CM)))
+        x2 = min(GRID_W, int(np.ceil((r.x + r.w) / CELL_CM)))
+        y2 = min(GRID_H, int(np.ceil((r.y + r.h) / CELL_CM)))
+        if x2 > x1 and y2 > y1:
+            occ[y1:y2, x1:x2] = 1
+    return occ
+
+
+def clearance_map(occ):
+    obstacles = np.argwhere(occ == 1)
+    clear = np.zeros_like(occ, dtype=float)
+    if len(obstacles) == 0:
+        return np.ones_like(occ, dtype=float) * 200
+
+    for y in range(occ.shape[0]):
+        for x in range(occ.shape[1]):
+            if occ[y, x] == 1:
+                clear[y, x] = 0
+            else:
+                d = np.min(np.abs(obstacles[:, 0] - y) + np.abs(obstacles[:, 1] - x))
+                clear[y, x] = d * CELL_CM
+    return clear
+
+
+def connected_components(mask):
+    seen = np.zeros_like(mask, dtype=bool)
+    sizes = []
+    h, w = mask.shape
+    for y in range(h):
+        for x in range(w):
+            if mask[y, x] and not seen[y, x]:
+                q = deque([(x, y)])
+                seen[y, x] = True
+                size = 0
+                while q:
+                    cx, cy = q.popleft()
+                    size += 1
+                    for nx, ny in [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]:
+                        if 0 <= nx < w and 0 <= ny < h and mask[ny, nx] and not seen[ny, nx]:
+                            seen[ny, nx] = True
+                            q.append((nx, ny))
+                sizes.append(size)
+    return sizes
+
+
+def point_to_cell(point):
+    x = int(np.clip(point[0] / CELL_CM, 0, GRID_W - 1))
+    y = int(np.clip(point[1] / CELL_CM, 0, GRID_H - 1))
+    return x, y
+
+
+def nearest_free_cell(occ, cell):
+    sx, sy = cell
+    if occ[sy, sx] == 0:
+        return sx, sy
+
+    seen = np.zeros_like(occ, dtype=bool)
+    q = deque([(sx, sy)])
+    seen[sy, sx] = True
+    while q:
+        cx, cy = q.popleft()
+        for nx, ny in [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]:
+            if 0 <= nx < GRID_W and 0 <= ny < GRID_H and not seen[ny, nx]:
+                if occ[ny, nx] == 0:
+                    return nx, ny
+                seen[ny, nx] = True
+                q.append((nx, ny))
+    return None
+
+
+def best_free_cell_near(occ, clear, cell, radius=14):
+    sx, sy = cell
+    best_cell = nearest_free_cell(occ, cell)
+    best_score = -1
+    for y in range(max(0, sy - radius), min(GRID_H, sy + radius + 1)):
+        for x in range(max(0, sx - radius), min(GRID_W, sx + radius + 1)):
+            if occ[y, x] == 1:
+                continue
+            distance_penalty = (abs(x - sx) + abs(y - sy)) * CELL_CM * 0.12
+            score = clear[y, x] - distance_penalty
+            if score > best_score:
+                best_score = score
+                best_cell = (x, y)
+    return best_cell
+
+
+def widest_path_clearance(clear, occ, start, end):
+    start = best_free_cell_near(occ, clear, start)
+    end = best_free_cell_near(occ, clear, end)
+    if start is None or end is None:
+        return 0
+
+    best = np.full_like(clear, -1, dtype=float)
+    sx, sy = start
+    ex, ey = end
+    best[sy, sx] = clear[sy, sx]
+    heap = [(-clear[sy, sx], sx, sy)]
+
+    while heap:
+        neg_width, x, y = heapq.heappop(heap)
+        width = -neg_width
+        if (x, y) == (ex, ey):
+            return width
+        if width < best[y, x]:
+            continue
+        for nx, ny in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]:
+            if 0 <= nx < GRID_W and 0 <= ny < GRID_H and occ[ny, nx] == 0:
+                candidate = min(width, clear[ny, nx])
+                if candidate > best[ny, nx]:
+                    best[ny, nx] = candidate
+                    heapq.heappush(heap, (-candidate, nx, ny))
+    return 0
+
+
+def path_score(width_cm):
+    if width_cm >= 85:
+        return 100
+    if width_cm >= 55:
+        return 70 + (width_cm - 55) / 30 * 30
+    if width_cm >= 40:
+        return 45 + (width_cm - 40) / 15 * 25
+    return max(0, width_cm / 40 * 45)
+
+
+def clearance_score(width_cm):
+    if width_cm >= 90:
+        return 100
+    if width_cm >= 60:
+        return 85 + (width_cm - 60) / 30 * 15
+    if width_cm >= 30:
+        return 55 + (width_cm - 30) / 30 * 30
+    return max(0, width_cm / 30 * 35)
+
+
+def rect_gap(a, b):
+    ax1, ay1, ax2, ay2 = a.x, a.y, a.x + a.w, a.y + a.h
+    bx1, by1, bx2, by2 = b.x, b.y, b.x + b.w, b.y + b.h
+    dx = max(bx1 - ax2, ax1 - bx2, 0)
+    dy = max(by1 - ay2, ay1 - by2, 0)
+    if dx == 0 and dy == 0:
+        return 0
+    return float(np.hypot(dx, dy))
+
+
+def dining_kitchen_clearance(df):
+    dining = df[df.type == "dining_set"]
+    kitchen_items = df[df.type.isin(["counter", "sink", "stove", "fridge", "storage"])]
+    if len(dining) == 0 or len(kitchen_items) == 0:
+        return 90.0
+    d = dining.iloc[0]
+    gaps = [rect_gap(d, item) for _, item in kitchen_items.iterrows()]
+    return float(min(gaps) if gaps else 90)
+
+
+def soft_distance_score(distance, ideal, tolerance, falloff):
+    over = max(distance - ideal, 0)
+    if over <= tolerance:
+        return 100
+    return float(np.clip(100 - (over - tolerance) / falloff * 100, 0, 100))
+
+
+def kitchen_triangle_score(df):
+    centers = {}
+    for item_type in ["sink", "stove", "fridge"]:
+        rows = df[df.type == item_type]
+        if len(rows) == 0:
+            return 62
+        r = rows.iloc[0]
+        centers[item_type] = np.array([r.x + r.w / 2, r.y + r.h / 2])
+
+    pairs = [("sink", "stove"), ("stove", "fridge"), ("fridge", "sink")]
+    distances = [np.linalg.norm(centers[a] - centers[b]) for a, b in pairs]
+    perimeter = sum(distances)
+    side_scores = [100 - min(abs(d - 180) / 2.2, 55) for d in distances]
+    perimeter_score = 100 - min(abs(perimeter - 620) / 4.8, 55)
+    return float(np.clip(0.65 * np.mean(side_scores) + 0.35 * perimeter_score, 0, 100))
+
+
+def natural_light_score(df, occ):
+    windows = df[df.type == "window"]
+    if len(windows) == 0:
+        return 35, 0
+
+    free_cells = np.argwhere(occ == 0)
+    if len(free_cells) == 0:
+        return 35, 0
+
+    window_points = []
+    for _, r in windows.iterrows():
+        if r.w >= r.h:
+            samples = max(3, int(r.w // 80))
+            for t in np.linspace(0.1, 0.9, samples):
+                window_points.append([r.x + r.w * t, np.clip(r.y + r.h / 2, 0, ROOM_H_CM)])
+        else:
+            samples = max(3, int(r.h // 80))
+            for t in np.linspace(0.1, 0.9, samples):
+                window_points.append([np.clip(r.x + r.w / 2, 0, ROOM_W_CM), r.y + r.h * t])
+
+    lit = 0
+    soft_lit = 0
+    for gy, gx in free_cells:
+        point = np.array([(gx + 0.5) * CELL_CM, (gy + 0.5) * CELL_CM])
+        d = min(np.linalg.norm(point - np.array(wp)) for wp in window_points)
+        if d <= 320:
+            lit += 1
+        if d <= 480:
+            soft_lit += 1
+
+    lit_ratio = lit / len(free_cells)
+    soft_ratio = soft_lit / len(free_cells)
+    score = np.clip(35 + lit_ratio * 48 + soft_ratio * 22, 0, 100)
+    return float(score), float(lit_ratio)
+
+
+def route_comfort(df, occ, clear):
+    def center_for(kind, fallback):
+        zdf = df[df.zone == kind]
+        if len(zdf) == 0:
+            return np.array(fallback)
+        return np.array([(zdf.x + zdf.w / 2).mean(), (zdf.y + zdf.h / 2).mean()])
+
+    door_df = df[df.type == "door"]
+    if len(door_df) > 0:
+        door = door_df.iloc[0]
+        entry = np.array([door.x + door.w / 2, max(0, door.y - 35)])
+    else:
+        entry = np.array([ROOM_W_CM / 2, ROOM_H_CM - 20])
+
+    anchors = {
+        "entry": entry,
+        "living": center_for("living", [ROOM_W_CM * 0.25, ROOM_H_CM * 0.5]),
+        "dining": center_for("dining", [ROOM_W_CM * 0.62, ROOM_H_CM * 0.5]),
+        "kitchen": center_for("kitchen", [ROOM_W_CM * 0.82, ROOM_H_CM * 0.62]),
+    }
+    route_pairs = [("entry", "living"), ("entry", "kitchen"), ("living", "dining"), ("dining", "kitchen")]
+    widths = [
+        widest_path_clearance(clear, occ, point_to_cell(anchors[a]), point_to_cell(anchors[b]))
+        for a, b in route_pairs
+    ]
+    scores = [path_score(w) for w in widths]
+    return float(np.mean(scores)), float(min(widths) if widths else 0), float(np.mean(widths) if widths else 0)
+
+
+def compute_scores(df, profile):
+    occ = to_grid(df)
+    clear = clearance_map(occ)
+    density = occ.sum() / occ.size
+    free_clear = clear[occ == 0]
+    critical = (free_clear < 60).sum() / max(len(free_clear), 1)
+    comfortable = (free_clear >= 90).sum() / max(len(free_clear), 1)
+    route_score, min_route_width, avg_route_width = route_comfort(df, occ, clear)
+    light_score, lit_ratio = natural_light_score(df, occ)
+    dining_service_clearance = dining_kitchen_clearance(df)
+    dining_service_score = clearance_score(dining_service_clearance)
+
+    usable = (clear >= 60) & (occ == 0)
+    comp = connected_components(usable)
+    largest = max(comp) if comp else 0
+    fragmentation = 1 - largest / max(usable.sum(), 1)
+
+    left = occ[:, : GRID_W // 2].sum()
+    right = occ[:, GRID_W // 2 :].sum()
+    top = occ[: GRID_H // 2, :].sum()
+    bottom = occ[GRID_H // 2 :, :].sum()
+    lr = abs(left - right) / max(left + right, 1)
+    tb = abs(top - bottom) / max(top + bottom, 1)
+
+    visual_balance = np.clip(100 * (1 - 0.55 * lr - 0.45 * tb), 0, 100)
+    openness = np.clip(100 * (1 - density * 1.45), 0, 100)
+    spatial_coherence = np.clip(100 * (1 - fragmentation * 1.35), 0, 100)
+    circulation = np.clip(route_score * 0.72 + dining_service_score * 0.18 + 100 * (1 - fragmentation) * 0.10, 0, 100)
+    accessibility = np.clip(route_score * 0.70 + comfortable * 30, 0, 100)
+    congestion = np.clip(route_score * 0.58 + dining_service_score * 0.25 + 100 * (1 - density * 1.4) * 0.17, 0, 100)
+
+    def zone_center(zdf):
+        if len(zdf) == 0:
+            return np.array([450, 200])
+        return np.array([(zdf.x + zdf.w / 2).mean(), (zdf.y + zdf.h / 2).mean()])
+
+    kc = zone_center(df[df.zone == "kitchen"])
+    dc = zone_center(df[df.zone == "dining"])
+    lc = zone_center(df[df.zone == "living"])
+    kd_dist = np.linalg.norm(kc - dc)
+    dl_dist = np.linalg.norm(dc - lc)
+
+    kitchen_dining_fit = soft_distance_score(kd_dist, ideal=260, tolerance=80, falloff=360)
+    dining_living_fit = soft_distance_score(dl_dist, ideal=340, tolerance=120, falloff=420)
+    functional_adjacency = np.clip(0.65 * kitchen_dining_fit + 0.35 * dining_living_fit, 0, 100)
+    activity_interference = np.clip(
+        route_score * 0.42 + dining_service_score * 0.36 + 100 * (1 - fragmentation) * 0.16 + 100 * (1 - critical) * 0.06,
+        0,
+        100,
+    )
+    zone_workflow = np.clip(100 - max((kd_dist + dl_dist) - 650, 0) / 9, 0, 100)
+    triangle = kitchen_triangle_score(df)
+    workflow_simplicity = np.clip(0.55 * zone_workflow + 0.45 * triangle, 0, 100)
+    natural_light = light_score
+    spatial_efficiency = np.clip(100 - abs(density - 0.22) * 210, 0, 100)
+    clearance_compliance = np.clip(route_score * 0.58 + dining_service_score * 0.27 + 100 * (1 - critical) * 0.15, 0, 100)
+
+    cooking_mult = {"Rarely cooks": 0.90, "Cooks sometimes": 1.0, "Cooks often": 1.15}[profile["cooking"]]
+    social_mult = {"Low": 0.90, "Medium": 1.0, "High": 1.18}[profile["social"]]
+    access_mult = {"Low": 0.9, "Medium": 1.0, "High": 1.20}[profile["accessibility"]]
+    lifestyle = np.clip(
+        0.35 * functional_adjacency * cooking_mult
+        + 0.35 * circulation * access_mult
+        + 0.15 * openness
+        + 0.15 * dining_service_score,
+        0,
+        100,
+    )
+    social_fit = np.clip(0.55 * workflow_simplicity * social_mult + 0.25 * openness + 0.20 * spatial_coherence, 0, 100)
+    maintenance = np.clip(100 - density * 95 - critical * 55, 0, 100)
+
+    sub = {
+        "Spatial Experience": {"Visual Balance": visual_balance, "Openness": openness, "Spatial Coherence": spatial_coherence},
+        "Human Comfort": {"Circulation Comfort": circulation, "Accessibility": accessibility, "Congestion Risk": congestion},
+        "Functional Logic": {"Functional Adjacency": functional_adjacency, "Activity Interference": activity_interference, "Workflow Simplicity": workflow_simplicity},
+        "Sustainability & Compliance": {"Natural Light Usage": natural_light, "Spatial Efficiency": spatial_efficiency, "Clearance Compliance": clearance_compliance},
+        "Client Fit": {"Lifestyle Compatibility": lifestyle, "Social Interaction Fit": social_fit, "Maintenance Practicality": maintenance},
+    }
+    sub = {k: {m: round(float(v), 0) for m, v in vals.items()} for k, vals in sub.items()}
+    macro = {k: round(sum(vals.values()) / len(vals), 0) for k, vals in sub.items()}
+    return macro, sub, clear, {
+        "critical": critical,
+        "density": density,
+        "fragmentation": fragmentation,
+        "comfortable": comfortable,
+        "min_route_width": min_route_width,
+        "avg_route_width": avg_route_width,
+        "lit_ratio": lit_ratio,
+        "kitchen_triangle": triangle,
+        "dining_service_clearance": dining_service_clearance,
+        "dining_service_score": dining_service_score,
+    }
+
+
+def color_class(score):
+    if score >= 75:
+        return "green"
+    if score >= 65:
+        return "amber"
+    return "orange"
+
+
+def status(score):
+    if score >= 75:
+        return "Good"
+    if score >= 65:
+        return "Fair"
+    return "Needs work"
+
+
+def list_card(title, items):
+    rows = "".join(f"<li>{item}</li>" for item in items[:3])
+    return f"""
+    <div class="card">
+        <div class="section-title">{title}</div>
+        <ul class="subtle">{rows}</ul>
+    </div>
+    """
+
+
+def layout_feedback(sub, diagnostics):
+    issues = []
+    tradeoffs = []
+    suggestions = []
+
+    if diagnostics["dining_service_clearance"] < 60:
+        issues.append(f"Dining is too close to the kitchen work area ({diagnostics['dining_service_clearance']:.0f} cm).")
+        suggestions.append("Move the dining set away from the counter/cooktop until the kitchen side has at least 60-90 cm.")
+    elif diagnostics["dining_service_clearance"] < 90:
+        issues.append(f"Kitchen-side dining clearance is usable but tight ({diagnostics['dining_service_clearance']:.0f} cm).")
+        suggestions.append("Fine-tune dining position to protect a more comfortable kitchen working aisle.")
+
+    if diagnostics["min_route_width"] < 55:
+        issues.append(f"The narrowest key route is only {diagnostics['min_route_width']:.0f} cm.")
+        suggestions.append("Keep a continuous open route from the door toward living, dining, and kitchen.")
+    elif diagnostics["avg_route_width"] >= 70:
+        tradeoffs.append("Main routes are comfortable, so furniture can be arranged more for use and composition.")
+
+    if sub["Human Comfort"]["Congestion Risk"] < 65:
+        issues.append("The layout still reads as congested around the main circulation paths.")
+        suggestions.append("Pull bulky pieces toward walls and leave the central path more continuous.")
+
+    if sub["Functional Logic"]["Workflow Simplicity"] >= 80:
+        tradeoffs.append("Kitchen workflow is strong, especially around the sink-stove-fridge relationship.")
+    elif diagnostics["kitchen_triangle"] < 65:
+        issues.append("The kitchen triangle is weak or incomplete.")
+        suggestions.append("Bring sink, cooktop, and fridge into a shorter, more balanced triangle.")
+
+    if sub["Spatial Experience"]["Openness"] < 65:
+        tradeoffs.append("The room gains function from furniture density, but visual openness is reduced.")
+    else:
+        tradeoffs.append("The room preserves good openness while keeping the main functions connected.")
+
+    if diagnostics["lit_ratio"] < 0.45:
+        issues.append("A limited share of free floor area is close to natural light.")
+        suggestions.append("Keep taller storage away from window zones and leave brighter areas more open.")
+    else:
+        tradeoffs.append("Natural light reaches a good share of the usable floor area.")
+
+    if not issues:
+        issues.append("No major blocking issue is detected in the current layout.")
+    if not suggestions:
+        suggestions.append("Keep testing small shifts and rotations to improve comfort without losing adjacency.")
+    return issues, tradeoffs, suggestions
+
+
+def draw_sofa(ax, x, y, w, h, edge, lw):
+    ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0,rounding_size=8", facecolor="#dcfce7", edgecolor=edge, linewidth=lw))
+    if w >= h:
+        n = max(2, int(w // 80))
+        for i in range(n):
+            cx = x + i * w / n
+            ax.add_patch(Rectangle((cx + 4, y + 6), w / n - 8, h - 12, facecolor="#ecfdf5", edgecolor="#86efac", lw=0.6))
+    else:
+        n = max(2, int(h // 70))
+        for i in range(n):
+            cy = y + i * h / n
+            ax.add_patch(Rectangle((x + 6, cy + 4), w - 12, h / n - 8, facecolor="#ecfdf5", edgecolor="#86efac", lw=0.6))
+    ax.text(x + w / 2, y + h / 2, "SOFA", ha="center", va="center", fontsize=8, fontweight="bold", color="#166534")
+
+
+def draw_dining_set(ax, x, y, w, h, edge, lw):
+    ax.add_patch(FancyBboxPatch((x + w * 0.18, y + h * 0.17), w * 0.64, h * 0.66, boxstyle="round,pad=0,rounding_size=7", facecolor="#fef3c7", edgecolor=edge, linewidth=lw))
+    chairs = [
+        (x + w * 0.28, y, w * 0.44, h * 0.13),
+        (x + w * 0.28, y + h * 0.87, w * 0.44, h * 0.13),
+        (x, y + h * 0.28, w * 0.14, h * 0.22),
+        (x, y + h * 0.57, w * 0.14, h * 0.22),
+        (x + w * 0.86, y + h * 0.28, w * 0.14, h * 0.22),
+        (x + w * 0.86, y + h * 0.57, w * 0.14, h * 0.22),
+    ]
+    for cx, cy, cw, ch in chairs:
+        ax.add_patch(FancyBboxPatch((cx, cy), cw, ch, boxstyle="round,pad=0,rounding_size=5", facecolor="#fef9c3", edgecolor="#64748b", linewidth=0.8))
+    ax.text(x + w / 2, y + h / 2, "DINING", ha="center", va="center", fontsize=8, fontweight="bold", color="#92400e")
+
+
+def draw_plant(ax, x, y, w, h, edge, lw):
+    ax.add_patch(Circle((x + w / 2, y + h / 2), min(w, h) * 0.42, facecolor="#dcfce7", edgecolor=edge, lw=lw))
+    for angle in np.linspace(0, 2 * np.pi, 7, endpoint=False):
+        ax.add_patch(
+            Ellipse(
+                (x + w / 2 + np.cos(angle) * w * 0.18, y + h / 2 + np.sin(angle) * h * 0.18),
+                w * 0.22,
+                h * 0.13,
+                angle=np.degrees(angle),
+                facecolor="#22c55e",
+                edgecolor="none",
+                alpha=0.85,
+            )
         )
-        st.session_state["candidate_layout"] = copy.deepcopy(updated_candidate_layout)
-        st.session_state["last_drag_event_id"] = event_id
-        st.rerun()
+    ax.text(x + w / 2, y + h / 2, "P", ha="center", va="center", fontsize=8, fontweight="bold", color="#14532d")
 
-if st.sidebar.button("Back to home"):
-    set_app_view("landing")
 
-st.sidebar.header("Layout Actions")
-st.sidebar.caption("Move objects directly in the editor. Double click an object to rotate it by 90 deg.")
+def draw_plan(df, selected=None):
+    fig, ax = plt.subplots(figsize=(12, 5.4))
+    wall = WALL_CM
+    ax.set_xlim(-70, ROOM_W_CM + 60)
+    ax.set_ylim(ROOM_H_CM + 55, -70)
+    ax.set_aspect("equal")
+    ax.axis("off")
 
-is_valid = layout_is_valid(candidate_layout["objects"])
+    ax.add_patch(Rectangle((0, 0), ROOM_W_CM, ROOM_H_CM, facecolor="#f5f1ea", edgecolor="#3f3f46", lw=1.2))
+    wall_color = "#6b6b65"
+    wall_edge = "#2f3437"
+    ax.add_patch(Rectangle((-wall, -wall), ROOM_W_CM + 2 * wall, wall, facecolor=wall_color, edgecolor=wall_edge, lw=1.2))
+    ax.add_patch(Rectangle((-wall, ROOM_H_CM), ROOM_W_CM + 2 * wall, wall, facecolor=wall_color, edgecolor=wall_edge, lw=1.2))
+    ax.add_patch(Rectangle((-wall, 0), wall, ROOM_H_CM, facecolor=wall_color, edgecolor=wall_edge, lw=1.2))
+    ax.add_patch(Rectangle((ROOM_W_CM, 0), wall, ROOM_H_CM, facecolor=wall_color, edgecolor=wall_edge, lw=1.2))
+    ax.text(28, -8, "WALL", ha="left", va="center", fontsize=7, fontweight="bold", color="#f8fafc")
 
-if st.sidebar.button("Reset candidate to baseline"):
-    st.session_state["candidate_layout"] = copy.deepcopy(st.session_state["baseline_layout"])
-    st.rerun()
+    rng = np.random.default_rng(7)
+    for _ in range(150):
+        x = rng.uniform(25, ROOM_W_CM - 55)
+        y = rng.uniform(25, ROOM_H_CM - 45)
+        w = rng.uniform(18, 65)
+        h = rng.uniform(5, 13)
+        ax.add_patch(Rectangle((x, y), w, h, facecolor="#ded6cb", alpha=0.13, edgecolor="none"))
 
-if st.sidebar.button("Update baseline with candidate", disabled=not is_valid):
-    st.session_state["baseline_layout"] = copy.deepcopy(candidate_layout)
-    st.session_state["candidate_layout"] = copy.deepcopy(candidate_layout)
-    st.rerun()
+    ax.plot([18, ROOM_W_CM - 18], [-30, -30], color="#9ca3af", lw=0.9)
+    ax.text(ROOM_W_CM / 2, -38, "900 cm", ha="center", va="bottom", fontsize=11, fontweight="bold", color="#333")
+    ax.plot([-30, -30], [18, ROOM_H_CM - 18], color="#9ca3af", lw=0.9)
+    ax.text(-45, ROOM_H_CM / 2, "400 cm", rotation=90, ha="center", va="center", fontsize=11, fontweight="bold", color="#333")
 
-plot_col_1, plot_col_2 = st.columns(2)
+    for _, r in df.iterrows():
+        x, y, w, h = r.x, r.y, r.w, r.h
+        edge = "#2563eb" if selected == r["name"] else "#4b5563"
+        lw = 2.3 if selected == r["name"] else 1.0
+        color = TYPE_COLORS.get(r.type, "#ffffff")
 
-with plot_col_1:
-    st.subheader("Baseline Layout")
-    fig_base = plot_layout(baseline_layout, "Baseline", theme)
-    st.pyplot(fig_base)
+        if r.type == "window":
+            ax.add_patch(Rectangle((x, y), w, h, facecolor=color, edgecolor=edge, lw=lw))
+            continue
+        if r.type == "door":
+            ax.add_patch(Rectangle((x, y), w, h, facecolor=color, edgecolor=edge, lw=lw))
+            swing_y = ROOM_H_CM - 1 if y >= ROOM_H_CM - h else y + h
+            ax.add_patch(Arc((x + w, swing_y), 2 * w, 2 * w, theta1=90, theta2=180, color=edge, lw=1.2))
+            continue
+        if r.type == "sofa":
+            draw_sofa(ax, x, y, w, h, edge, lw)
+            continue
+        if r.type == "dining_set":
+            draw_dining_set(ax, x, y, w, h, edge, lw)
+            continue
+        if r.type == "plant":
+            draw_plant(ax, x, y, w, h, edge, lw)
+            continue
 
-with plot_col_2:
-    st.subheader("Candidate Layout")
-    fig_candidate = plot_layout(candidate_layout, "Candidate", theme)
-    st.pyplot(fig_candidate)
+        ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0,rounding_size=6", facecolor=color, edgecolor=edge, linewidth=lw))
+        label = {"counter": "KITCHEN", "tv": "TV", "storage": "STORAGE", "sink": "SINK", "stove": "STOVE", "fridge": "FRIDGE"}.get(r.type, r.type.upper())
+        fs = 7 if min(w, h) < 45 else 8
+        ax.text(x + w / 2, y + h / 2, label, ha="center", va="center", fontsize=fs, fontweight="bold", color="#334155")
 
-render_layout_legend()
+        if r.type == "stove":
+            for i in range(4):
+                cx = x + w * 0.30 + (i % 2) * w * 0.25
+                cy = y + h * 0.35 + (i // 2) * h * 0.25
+                ax.add_patch(plt.Circle((cx, cy), min(w, h) * 0.12, fill=False, edgecolor="#64748b", lw=0.8))
+        if r.type == "sink":
+            ax.add_patch(Rectangle((x + w * 0.2, y + h * 0.2), w * 0.6, h * 0.6, fill=False, edgecolor="#64748b", lw=0.8))
+        if r.type == "fridge":
+            ax.plot([x, x + w], [y + h * 0.5, y + h * 0.5], color="#94a3b8", lw=0.8)
 
-if not is_valid:
-    st.error("Invalid layout: some objects overlap. Please adjust the object positions.")
-else:
-    result_base = analyze_layout(baseline_layout)
-    result_candidate = analyze_layout(candidate_layout)
-    comparison = compare_layouts(result_base, result_candidate)
+    return fig
 
-    if "workflow_paths" not in result_candidate or "work_triangle" not in result_candidate:
-        st.sidebar.warning("Score details are not loaded. Restart the app after updating logic.py.")
 
-    score_col_1, score_col_2 = st.columns(2)
+def draw_heatmap(clear):
+    fig, ax = plt.subplots(figsize=(12, 5.4))
+    ax.imshow(clear, cmap="YlOrRd_r", origin="upper", extent=[0, ROOM_W_CM, ROOM_H_CM, 0])
+    ax.add_patch(Rectangle((0, 0), ROOM_W_CM, ROOM_H_CM, fill=False, edgecolor="#374151", lw=1.2))
+    ax.set_title("Critical clearance and congestion heatmap", fontsize=12, fontweight="bold")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    return fig
 
-    with score_col_1:
-        render_score_panel("Baseline Scores", result_base)
 
-    with score_col_2:
-        render_score_panel("Candidate Scores", result_candidate)
+def metric_card(name, score, submetrics):
+    cls = color_class(score)
+    score_cls = "" if cls == "green" else f"metric-score-{cls}"
+    fill_cls = f"progress-fill-{cls}"
+    rows = ""
+    for k, v in submetrics.items():
+        dot = "#2e9d55" if v >= 75 else "#f5b642" if v >= 65 else "#f97316"
+        rows += f"<div class='mini-row'><span>{k}</span><span><span style='color:{dot};'>●</span> {int(v)}/100</span></div>"
+    score_color = "#2e9d55" if cls == "green" else "#b7791f" if cls == "amber" else "#c75b12"
+    return f"""
+    <div class="small-card">
+        <div class="metric-name">{name}</div>
+        <div style="display:flex;align-items:baseline;gap:4px;margin-top:12px;">
+            <span class="metric-score {score_cls}">{int(score)}</span><span class="subtle">/100</span>
+        </div>
+        <div class="subtle" style="color:{score_color};">{status(score)}</div>
+        <div class="progress-bg"><div class="{fill_cls}" style="width:{int(score)}%;"></div></div>
+        {rows}
+    </div>
+    """
 
-    st.subheader("Suggestions")
-    st.table(build_suggestion_rows(result_candidate))
 
-    st.subheader("Score Breakdown")
+if "layout_df" not in st.session_state:
+    st.session_state.layout_df = load_sample_layout()
 
-    detail_col_1, detail_col_2 = st.columns(2)
+with st.sidebar:
+    st.markdown('<div class="sidebar-title">▧ Interior Layout Audit</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-subtitle">AI-assisted design analysis</div>', unsafe_allow_html=True)
 
-    with detail_col_1:
-        with st.expander("Baseline workflow details", expanded=False):
-            st.table(build_workflow_rows(result_base))
-        with st.expander("Baseline work triangle details", expanded=False):
-            st.table(build_work_triangle_rows(result_base))
-        with st.expander("Baseline space details", expanded=False):
-            st.table(build_space_rows(result_base))
+    st.markdown('<div class="subtle">1. LAYOUT</div>', unsafe_allow_html=True)
+    layout_mode = st.selectbox("Layout mode", ["Grid Editor", "Move Objects", "Add Objects"], index=0, label_visibility="collapsed")
+    if layout_mode == "Grid Editor":
+        st.markdown('<div class="nav-item nav-active">Grid Editor</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nav-item">Move Objects</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nav-item">Add Objects</div>', unsafe_allow_html=True)
+    elif layout_mode == "Move Objects":
+        st.markdown('<div class="nav-item">Grid Editor</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nav-item nav-active">Move Objects</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nav-item">Add Objects</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="nav-item">Grid Editor</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nav-item">Move Objects</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nav-item nav-active">Add Objects</div>', unsafe_allow_html=True)
 
-    with detail_col_2:
-        with st.expander("Candidate workflow details", expanded=True):
-            st.table(build_workflow_rows(result_candidate))
-        with st.expander("Candidate work triangle details", expanded=True):
-            st.table(build_work_triangle_rows(result_candidate))
-        with st.expander("Candidate space details", expanded=False):
-            st.table(build_space_rows(result_candidate))
+    with st.expander("Upload / reset layout"):
+        uploaded = st.file_uploader("CSV layout", type=["csv"])
+        if uploaded:
+            try:
+                st.session_state.layout_df = clean_layout(pd.read_csv(uploaded))
+                st.success("Layout uploaded.")
+            except Exception as e:
+                st.error(f"Invalid CSV: {e}")
+        if st.button("Reset layout demo"):
+            st.session_state.layout_df = demo_layout()
 
-    st.subheader("Comparison Summary")
-    st.write(f"**Space winner:** {comparison['space_winner']}")
-    st.write(f"**Workflow winner:** {comparison['workflow_winner']}")
-    st.write(f"**Recommendation:** {comparison['recommendation']}")
+    with st.expander("Add object"):
+        new_name = st.text_input("Object name", value="New Object", key="sidebar_new_name")
+        new_type = st.selectbox("Type", list(TYPE_COLORS.keys()), index=0, key="sidebar_new_type")
+        new_zone = st.selectbox("Zone", ["kitchen", "living", "dining", "entry"], index=0, key="sidebar_new_zone")
+        if st.button("Add", key="sidebar_add_object"):
+            new_row = pd.DataFrame(
+                [{"name": new_name, "type": new_type, "zone": new_zone, "x": 100, "y": 100, "w": 50, "h": 50}]
+            )
+            st.session_state.layout_df = clean_layout(pd.concat([st.session_state.layout_df, new_row], ignore_index=True))
+            st.session_state.selected_name = new_name
+            st.rerun()
+
+    with st.expander("Remove object"):
+        current_layout = clean_layout(st.session_state.layout_df)
+        if len(current_layout) > 0:
+            remove_name = st.selectbox("Object to remove", current_layout["name"].tolist(), key="sidebar_remove_name")
+            if st.button("Remove", key="sidebar_remove_object"):
+                updated = current_layout[current_layout["name"] != remove_name]
+                st.session_state.layout_df = clean_layout(updated)
+                if len(st.session_state.layout_df) > 0:
+                    st.session_state.selected_name = st.session_state.layout_df.iloc[0]["name"]
+                else:
+                    st.session_state.selected_name = ""
+                st.rerun()
+        else:
+            st.write("No objects in the layout.")
+
+    st.markdown('<br><div class="subtle">2. CLIENT PROFILE</div>', unsafe_allow_html=True)
+    st.markdown('<div class="nav-item">Client Profile</div>', unsafe_allow_html=True)
+    st.markdown('<div class="nav-item">Lifestyle & Habits</div>', unsafe_allow_html=True)
+
+    st.markdown('<br><div class="subtle">3. ANALYSIS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="nav-item nav-active">Audit Results</div>', unsafe_allow_html=True)
+    st.markdown('<div class="nav-item">Heatmap</div>', unsafe_allow_html=True)
+    st.markdown('<div class="nav-item">Suggestions</div>', unsafe_allow_html=True)
+
+left, right = st.columns([0.72, 0.28], gap="large")
+
+with right:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Client profile</div>', unsafe_allow_html=True)
+    client_type = st.selectbox("Client type", ["Couple", "Family", "Single", "Short-term rental", "Hospitality"], index=0)
+    priority = st.selectbox("Main priority", ["Social interaction", "Aesthetics", "Practicality", "Comfort", "Balanced"], index=0)
+    cooking = st.selectbox("Cooking habits", ["Rarely cooks", "Cooks sometimes", "Cooks often"], index=2)
+    social = st.selectbox("Guests / social activity", ["Low", "Medium", "High"], index=2)
+    accessibility = st.selectbox("Accessibility", ["Low", "Medium", "High"], index=1)
+    style = st.selectbox("Preferred style", ["Minimal Warm", "Modern", "Natural", "Premium", "Functional"], index=0)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+profile = {"priority": priority, "cooking": cooking, "social": social, "accessibility": accessibility, "style": style}
+
+df = clean_layout(st.session_state.layout_df)
+selected_name = st.session_state.get("selected_name", df.iloc[0]["name"] if len(df) > 0 else "")
+
+if layout_mode == "Grid Editor":
+    with left:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Grid Editor</div>', unsafe_allow_html=True)
+        st.markdown('<div class="subtle">Start from the sample layout, drag objects on the grid, then save the final position. The demo includes a few imperfect placements so the decision support suggestions are easier to read.</div>', unsafe_allow_html=True)
+        grid_result = render_grid_editor(df)
+        if grid_result is not None:
+            try:
+                new_df = clean_layout(pd.DataFrame(grid_result))
+                if not new_df.equals(clean_layout(st.session_state.layout_df)):
+                    st.session_state.layout_df = new_df
+                    st.rerun()
+                df = new_df
+            except Exception:
+                st.error("Unable to update the layout from the drag-and-drop component.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+elif layout_mode == "Move Objects":
+    with left:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">1. Editable analyzed layout</div>', unsafe_allow_html=True)
+        st.markdown('<div class="subtle">Open space - 900 cm x 400 cm - select an object and edit X/Y to move it</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with right:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Move object</div>', unsafe_allow_html=True)
+        if len(df) > 0:
+            names = df["name"].tolist()
+            selected_name = st.selectbox("Selected object", names, index=names.index(selected_name) if selected_name in names else 0)
+            st.session_state.selected_name = selected_name
+            idx = df.index[df["name"] == selected_name][0]
+            row = df.loc[idx]
+            can_wall = row.type in {"door", "window"}
+            min_pos = -WALL_CM if can_wall else 0
+            new_x = st.number_input("X cm", min_value=min_pos, max_value=ROOM_W_CM, value=int(row.x), step=10)
+            new_y = st.number_input("Y cm", min_value=min_pos, max_value=ROOM_H_CM, value=int(row.y), step=10)
+            new_w = st.number_input("Width cm", min_value=10, max_value=ROOM_W_CM, value=int(row.w), step=10)
+            new_h = st.number_input("Depth / height cm", min_value=10, max_value=ROOM_H_CM, value=int(row.h), step=10)
+            df.loc[idx, ["x", "y", "w", "h"]] = [int(new_x), int(new_y), int(new_w), int(new_h)]
+            st.session_state.layout_df = clean_layout(df)
+            st.markdown('<span class="subtle">Changes are applied automatically.</span>', unsafe_allow_html=True)
+            if st.button("Remove selected object"):
+                st.session_state.layout_df = clean_layout(st.session_state.layout_df[st.session_state.layout_df["name"] != selected_name])
+                if len(st.session_state.layout_df) > 0:
+                    st.session_state.selected_name = st.session_state.layout_df.iloc[0]["name"]
+                else:
+                    st.session_state.selected_name = ""
+                st.rerun()
+        else:
+            st.write("No objects in the layout.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+elif layout_mode == "Add Objects":
+    with left:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Add Object Manually</div>', unsafe_allow_html=True)
+        new_name = st.text_input("Object name", value="New Object", key="page_new_name")
+        new_type = st.selectbox("Type", list(TYPE_COLORS.keys()), index=0, key="page_new_type")
+        new_zone = st.selectbox("Zone", ["kitchen", "living", "dining", "entry"], index=0, key="page_new_zone")
+        new_x = st.number_input("X cm", min_value=-WALL_CM, max_value=ROOM_W_CM, value=100, step=10, key="page_new_x")
+        new_y = st.number_input("Y cm", min_value=-WALL_CM, max_value=ROOM_H_CM, value=100, step=10, key="page_new_y")
+        new_w = st.number_input("Width cm", min_value=10, max_value=ROOM_W_CM, value=50, step=10, key="page_new_w")
+        new_h = st.number_input("Height cm", min_value=10, max_value=ROOM_H_CM, value=50, step=10, key="page_new_h")
+        if st.button("Add", key="page_add_object"):
+            new_row = pd.DataFrame(
+                [{"name": new_name, "type": new_type, "zone": new_zone, "x": new_x, "y": new_y, "w": new_w, "h": new_h}]
+            )
+            st.session_state.layout_df = clean_layout(pd.concat([st.session_state.layout_df, new_row], ignore_index=True))
+            st.session_state.selected_name = new_name
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+macro, sub, clear, diagnostics = compute_scores(df, profile)
+
+with left:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.pyplot(draw_plan(df, selected=selected_name), use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with right:
+    st.markdown(
+        f"""
+    <div class="card">
+        <div class="section-title">Client Fit Overview</div>
+        <div style="font-size:2.4rem;font-weight:850;color:#111827;margin-top:10px;">{int(macro["Client Fit"])}<span class="subtle"> /100</span></div>
+        <div style="color:#2e9d55;font-weight:700;">{status(macro["Client Fit"])}</div>
+        <br>
+        <span class="badge">{priority}</span>
+        <span class="badge">{style}</span>
+        <span class="badge">{cooking}</span>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown('<div class="section-title">2. Analysis results</div>', unsafe_allow_html=True)
+cols = st.columns(5)
+for col, (cat, score) in zip(cols, macro.items()):
+    with col:
+        st.markdown(metric_card(cat, score, sub[cat]), unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+
+issues, tradeoffs, suggestions = layout_feedback(sub, diagnostics)
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.markdown(list_card("Main issues", issues), unsafe_allow_html=True)
+with c2:
+    st.markdown(list_card("Key trade-offs", tradeoffs), unsafe_allow_html=True)
+with c3:
+    st.markdown(list_card("Key suggestions", suggestions), unsafe_allow_html=True)
+
+with st.expander("Advanced editor: edit all objects"):
+    edited = st.data_editor(
+        df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "type": st.column_config.SelectboxColumn("type", options=list(TYPE_COLORS.keys())),
+            "zone": st.column_config.SelectboxColumn("zone", options=["entry", "kitchen", "dining", "living", "other"]),
+            "x": st.column_config.NumberColumn("x", min_value=-WALL_CM, max_value=ROOM_W_CM, step=10),
+            "y": st.column_config.NumberColumn("y", min_value=-WALL_CM, max_value=ROOM_H_CM, step=10),
+            "w": st.column_config.NumberColumn("w", min_value=10, max_value=ROOM_W_CM, step=10),
+            "h": st.column_config.NumberColumn("h", min_value=10, max_value=ROOM_H_CM, step=10),
+        },
+        key="layout_editor",
+    )
+    if st.button("Update layout from table"):
+        st.session_state.layout_df = clean_layout(edited)
+
+with st.expander("Heatmap and technical diagnostics"):
+    st.pyplot(draw_heatmap(clear), use_container_width=True)
+    diag = pd.DataFrame(
+        [
+            ["Furniture density", f"{diagnostics['density']:.1%}"],
+            ["Area with critical clearance < 60 cm", f"{diagnostics['critical']:.1%}"],
+            ["Comfortable area >= 90 cm", f"{diagnostics['comfortable']:.1%}"],
+            ["Usable-space fragmentation", f"{diagnostics['fragmentation']:.2f}"],
+            ["Narrowest key route", f"{diagnostics['min_route_width']:.0f} cm"],
+            ["Average key route width", f"{diagnostics['avg_route_width']:.0f} cm"],
+            ["Naturally lit free area", f"{diagnostics['lit_ratio']:.1%}"],
+            ["Kitchen triangle quality", f"{diagnostics['kitchen_triangle']:.0f}/100"],
+            ["Dining-kitchen clearance", f"{diagnostics['dining_service_clearance']:.0f} cm"],
+        ],
+        columns=["Indicator", "Value"],
+    )
+    st.dataframe(diag, hide_index=True, use_container_width=True)
+
+with st.expander("Export current layout"):
+    st.download_button(
+        "Download modified layout CSV",
+        data=clean_layout(st.session_state.layout_df).to_csv(index=False).encode("utf-8"),
+        file_name="modified_layout.csv",
+        mime="text/csv",
+    )

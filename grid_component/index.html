@@ -1,0 +1,390 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1f2937;
+      background: transparent;
+    }
+
+    .grid-wrapper {
+      width: min(100%, 980px);
+      box-sizing: border-box;
+      padding: 16px;
+      background: #f8fafc;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+    }
+
+    .plan-stage {
+      position: relative;
+      transform-origin: top left;
+      overflow: visible;
+    }
+
+    .wall-shell {
+      position: relative;
+      box-sizing: content-box;
+      width: 900px;
+      height: 400px;
+      padding: 18px;
+      background: #6b6b65;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+      overflow: visible;
+    }
+
+    .floor-plan {
+      position: relative;
+      width: 900px;
+      height: 400px;
+      background: #f5f1ea;
+      box-shadow: inset 0 0 0 1px #3f3f46;
+      overflow: visible;
+      touch-action: none;
+    }
+
+    .floor-plan::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(to right, rgba(148, 163, 184, 0.25) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(148, 163, 184, 0.25) 1px, transparent 1px);
+      background-size: 50px 50px;
+    }
+
+    .wall-label {
+      position: absolute;
+      top: 3px;
+      left: 34px;
+      color: #f8fafc;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .item {
+      position: absolute;
+      box-sizing: border-box;
+      border: 1px solid rgba(75, 85, 99, 0.75);
+      border-radius: 8px;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 5px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.1;
+      text-align: center;
+      color: #1f2937;
+      cursor: grab;
+      user-select: none;
+      z-index: 1;
+    }
+
+    .item.dragging {
+      opacity: 0.86;
+      cursor: grabbing;
+      z-index: 1000;
+    }
+
+    .item.selected {
+      outline: 3px solid #2563eb;
+      z-index: 999;
+    }
+
+    .item.window {
+      border-color: #64748b;
+      box-shadow: none;
+      z-index: 3;
+    }
+
+    .status {
+      margin: 12px 0 0;
+      color: #334155;
+      font-size: 0.95rem;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    button {
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: 1px solid #2563eb;
+      background: #2563eb;
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .hint {
+      color: #64748b;
+      font-size: 0.84rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-wrapper">
+    <div class="plan-stage" id="plan-stage">
+      <div class="wall-shell" id="wall-shell">
+        <div class="wall-label">WALL</div>
+        <div class="floor-plan" id="floor-plan"></div>
+      </div>
+    </div>
+    <div class="status" id="status">Drag an object to change its position.</div>
+    <div class="actions">
+      <button id="save" type="button">Save positions</button>
+      <span class="hint">Coordinates snap to the 10 cm grid. Double-click an object to rotate it.</span>
+    </div>
+  </div>
+
+  <script>
+    const stage = document.getElementById("plan-stage");
+    const shell = document.getElementById("wall-shell");
+    const plan = document.getElementById("floor-plan");
+    const status = document.getElementById("status");
+    const saveBtn = document.getElementById("save");
+    const BASE_W = 900;
+    const BASE_H = 400;
+    const WALL = 18;
+    const SNAP = 10;
+
+    let items = [];
+    let colors = {};
+    let roomWidth = BASE_W;
+    let roomHeight = BASE_H;
+    let dragItem = null;
+    let startPointer = { x: 0, y: 0 };
+    let startPos = { x: 0, y: 0 };
+    let scale = 1;
+    let lastRenderFingerprint = "";
+
+    function sendMessage(type, data) {
+      window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+    }
+
+    function setFrameHeight() {
+      sendMessage("streamlit:setFrameHeight", { height: document.body.scrollHeight + 8 });
+    }
+
+    function setComponentValue(value) {
+      sendMessage("streamlit:setComponentValue", { value });
+    }
+
+    function snap(value) {
+      return Math.round(value / SNAP) * SNAP;
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+    function updateScale() {
+      const outerWidth = roomWidth + WALL * 2;
+      const outerHeight = roomHeight + WALL * 2;
+      const available = stage.parentElement.clientWidth - 34;
+      scale = Math.min(1, available / outerWidth);
+      shell.style.width = `${roomWidth}px`;
+      shell.style.height = `${roomHeight}px`;
+      plan.style.width = `${roomWidth}px`;
+      plan.style.height = `${roomHeight}px`;
+      stage.style.width = `${outerWidth * scale}px`;
+      stage.style.height = `${outerHeight * scale}px`;
+      shell.style.transform = `scale(${scale})`;
+      shell.style.transformOrigin = "top left";
+      setFrameHeight();
+    }
+
+    function fingerprint(list) {
+      return JSON.stringify((list || []).map((item) => ({
+        name: item.name,
+        type: item.type,
+        zone: item.zone,
+        x: Number(item.x),
+        y: Number(item.y),
+        w: Number(item.w),
+        h: Number(item.h),
+      })));
+    }
+
+    function getPositions() {
+      return Array.from(plan.querySelectorAll(".item")).map((el) => ({
+        name: el.dataset.name,
+        type: el.dataset.type,
+        zone: el.dataset.zone,
+        x: Math.round(parseFloat(el.style.left) || 0),
+        y: Math.round(parseFloat(el.style.top) || 0),
+        w: Math.round(parseFloat(el.style.width) || 10),
+        h: Math.round(parseFloat(el.style.height) || 10),
+      }));
+    }
+
+    function selectItem(el) {
+      plan.querySelectorAll(".item").forEach((node) => node.classList.remove("selected"));
+      el.classList.add("selected");
+      status.textContent = `Selected: ${el.dataset.name}`;
+    }
+
+    function boundsFor(el, w, h) {
+      const canUseWall = el.dataset.type === "window" || el.dataset.type === "door";
+      return {
+        minX: canUseWall ? -WALL : 0,
+        minY: canUseWall ? -WALL : 0,
+        maxX: canUseWall ? roomWidth : roomWidth - w,
+        maxY: canUseWall ? roomHeight : roomHeight - h,
+      };
+    }
+
+    function commitPositions() {
+      items = getPositions();
+      setComponentValue(items);
+    }
+
+    function createItem(item) {
+      const el = document.createElement("div");
+      el.className = `item ${item.type || ""}`;
+      el.textContent = item.name;
+      el.dataset.name = item.name;
+      el.dataset.type = item.type;
+      el.dataset.zone = item.zone;
+      el.style.left = `${item.x}px`;
+      el.style.top = `${item.y}px`;
+      el.style.width = `${item.w}px`;
+      el.style.height = `${item.h}px`;
+      el.style.background = colors[item.type] || "#ffffff";
+
+      el.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        if (dragItem && dragItem !== el) {
+          dragItem.classList.remove("dragging");
+        }
+        dragItem = el;
+        startPointer = { x: event.clientX, y: event.clientY };
+        startPos = {
+          x: parseFloat(el.style.left) || 0,
+          y: parseFloat(el.style.top) || 0,
+        };
+        el.setPointerCapture(event.pointerId);
+        el.classList.add("dragging");
+        selectItem(el);
+      });
+
+      el.addEventListener("pointermove", (event) => {
+        if (dragItem !== el) return;
+        const w = parseFloat(el.style.width) || 10;
+        const h = parseFloat(el.style.height) || 10;
+        const dx = (event.clientX - startPointer.x) / scale;
+        const dy = (event.clientY - startPointer.y) / scale;
+        const { minX, minY, maxX, maxY } = boundsFor(el, w, h);
+        const x = clamp(snap(startPos.x + dx), minX, maxX);
+        const y = clamp(snap(startPos.y + dy), minY, maxY);
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+        status.textContent = `${el.dataset.name}: X ${Math.round(x)} cm, Y ${Math.round(y)} cm`;
+      });
+
+      el.addEventListener("pointerup", (event) => {
+        if (dragItem !== el) return;
+        el.releasePointerCapture(event.pointerId);
+        el.classList.remove("dragging");
+        dragItem = null;
+        commitPositions();
+      });
+
+      el.addEventListener("pointercancel", () => {
+        if (dragItem !== el) return;
+        el.classList.remove("dragging");
+        dragItem = null;
+        commitPositions();
+      });
+
+      el.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const oldW = parseFloat(el.style.width) || 10;
+        const oldH = parseFloat(el.style.height) || 10;
+        const newW = oldH;
+        const newH = oldW;
+        const { minX, minY, maxX, maxY } = boundsFor(el, newW, newH);
+        const x = clamp(parseFloat(el.style.left) || 0, minX, maxX);
+        const y = clamp(parseFloat(el.style.top) || 0, minY, maxY);
+        el.style.width = `${newW}px`;
+        el.style.height = `${newH}px`;
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+        selectItem(el);
+        status.textContent = `Rotated: ${el.dataset.name}`;
+        commitPositions();
+      });
+
+      return el;
+    }
+
+    function render(args) {
+      const incomingItems = args.items || [];
+      const nextFingerprint = fingerprint(incomingItems);
+      const localFingerprint = plan.querySelector(".item") ? fingerprint(getPositions()) : "";
+      colors = args.colors || {};
+      roomWidth = args.roomWidth || BASE_W;
+      roomHeight = args.roomHeight || BASE_H;
+
+      if (dragItem) {
+        updateScale();
+        return;
+      }
+
+      if (localFingerprint && localFingerprint !== lastRenderFingerprint && nextFingerprint === lastRenderFingerprint) {
+        updateScale();
+        return;
+      }
+
+      if (localFingerprint && nextFingerprint === localFingerprint) {
+        lastRenderFingerprint = nextFingerprint;
+        updateScale();
+        return;
+      }
+
+      if (nextFingerprint === lastRenderFingerprint) {
+        updateScale();
+        return;
+      }
+
+      items = incomingItems;
+      lastRenderFingerprint = nextFingerprint;
+      plan.innerHTML = "";
+      items.forEach((item) => plan.appendChild(createItem(item)));
+      updateScale();
+    }
+
+    saveBtn.addEventListener("click", () => {
+      items = getPositions();
+      setComponentValue(items);
+      status.textContent = "Positions saved.";
+    });
+
+    window.addEventListener("resize", updateScale);
+    window.addEventListener("message", (event) => {
+      if (event.data.type !== "streamlit:render") return;
+      render(event.data.args || {});
+    });
+
+    sendMessage("streamlit:componentReady", { apiVersion: 1 });
+    setFrameHeight();
+  </script>
+</body>
+</html>

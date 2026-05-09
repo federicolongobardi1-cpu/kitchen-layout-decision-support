@@ -1,0 +1,15 @@
+name,type,zone,x,y,w,h
+Door,door,entry,440,400,80,18
+Window Top,window,living,520,-15,260,15
+Window Left,window,living,-15,145,15,155
+TV Unit,tv,living,40,0,320,38
+Sofa 1,sofa,living,0,225,70,175
+Sofa 2,sofa,living,120,315,230,60
+Plant Large,plant,living,455,300,40,40
+Plant Small,plant,living,380,0,35,35
+Fridge,fridge,kitchen,840,80,60,95
+Tall Storage,storage,kitchen,840,180,60,175
+Kitchen Counter,counter,kitchen,600,355,300,45
+Sink,sink,kitchen,850,250,42,48
+Cooktop,stove,kitchen,720,360,70,28
+Dining Set,dining_set,dining,620,210,145,185
